@@ -169,5 +169,5 @@ Este projeto está licenciado sob a Licença MIT - veja o arquivo [LICENSE](LICE
 ---
 
 <div align="center">
-  Desenvolvido com ❤️ por <a href="https://github.com/proelias7">Guilherme Proel</a>
+  Desenvolvido com ❤️ por <a href="https://github.com/proelias7"> proelias7</a>
 </div> 
