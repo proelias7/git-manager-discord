@@ -1,0 +1,29 @@
+# Dependências
+node_modules/
+npm-debug.log
+yarn-debug.log
+yarn-error.log
+
+# Variáveis de ambiente
+.env
+.env.local
+.env.development
+.env.test
+.env.production
+
+# Logs
+logs
+*.log
+
+# Diretórios de sistemas operacionais
+.DS_Store
+Thumbs.db
+
+# Diretório de repositórios de exemplo (caso seja usado para testes)
+repositories/
+
+# IDEs e editores
+.idea/
+.vscode/
+*.swp
+*.swo 

@@ -1,0 +1,36 @@
+{
+  "name": "git-manager-discord",
+  "version": "1.0.0",
+  "description": "Bot do Discord para gerenciar repositórios Git",
+  "main": "src/index.js",
+  "scripts": {
+    "start": "node src/index.js",
+    "dev": "nodemon src/index.js",
+    "deploy-commands": "node src/deploy-commands.js"
+  },
+  "dependencies": {
+    "discord.js": "^14.14.1",
+    "dotenv": "^16.3.1",
+    "simple-git": "^3.22.0"
+  },
+  "devDependencies": {
+    "nodemon": "^3.0.2"
+  },
+  "author": "Guilherme Proel <proelguilherme@gmail.com>",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/proelias7/git-manager-discord.git"
+  },
+  "keywords": [
+    "discord",
+    "bot",
+    "git",
+    "github",
+    "devops",
+    "automation"
+  ],
+  "engines": {
+    "node": ">=16.x"
+  }
+} 
