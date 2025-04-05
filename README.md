@@ -8,7 +8,7 @@
 
 </div>
 
-Um bot do Discord que permite gerenciar repositórios Git remotamente através de slash commands. Com este bot, você pode listar repositórios, executar pull, commit e push através de uma interface interativa no Discord.
+Um bot do Discord que permite gerenciar repositórios Git remotamente através de slash commands e interfaces interativas. Gerencie seus repositórios, submódulos e execute operações Git comuns como pull, commit e push diretamente pelo Discord.
 
 <div align="center">
   <img src="https://via.placeholder.com/800x400?text=Git+Manager+Discord+Bot" alt="Git Manager Discord Preview" width="70%">
@@ -16,10 +16,14 @@ Um bot do Discord que permite gerenciar repositórios Git remotamente através d
 
 ## ✨ Funcionalidades
 
-- 📋 Listar repositórios Git disponíveis
-- 👁️ Visualizar status dos repositórios (branch atual, modificações, etc.)
+- 📋 Listar repositórios Git e submódulos disponíveis
+- 👁️ Visualizar status detalhado dos repositórios (branch atual, modificações, HEAD destacada, etc.)
 - 🔄 Executar Git Pull para atualizar repositórios
-- 📤 Adicionar, commitar alterações e fazer push com uma única ação
+- 📦 Inicializar e atualizar submódulos Git
+- 🛠️ Corrigir submódulos com HEAD destacada (detached HEAD)
+- 📤 Adicionar, commitar alterações e fazer push com uma interface de modal interativa
+- 🔁 Atualizar todos os repositórios com uma única ação
+- 🚨 Suporte a modos de pull: normal, com stash e force
 
 ## 🔧 Pré-requisitos
 
@@ -62,11 +66,18 @@ Um bot do Discord que permite gerenciar repositórios Git remotamente através d
 
 ## 📝 Uso
 
-1. No Discord, digite `/repositorios` para ver a lista de repositórios disponíveis.
-2. Selecione um repositório no menu dropdown.
-3. Escolha a ação desejada:
+1. No Discord, digite `/init` para inicializar o painel de controle Git.
+2. Utilize os botões do painel para interagir com os repositórios:
+   - **Listar Repositórios**: Mostra todos os repositórios e submódulos disponíveis no caminho base configurado.
+   - **Atualizar Todos**: Atualiza todos os repositórios e submódulos com uma única ação.
+   - **Status Geral**: Verifica o status de todos os repositórios.
+
+3. Ao selecionar um repositório específico, você terá acesso a ações como:
    - **Pull**: Atualiza o repositório local com as mudanças do remoto.
-   - **Commit & Push**: Adiciona todas as alterações, solicita uma mensagem de commit e faz push para o repositório remoto.
+   - **Commit & Push**: Adiciona todas as alterações, permite inserir uma mensagem de commit e faz push para o repositório remoto.
+   - **Inicializar Submódulos**: Inicializa submódulos não configurados.
+   - **Atualizar Submódulos**: Atualiza submódulos existentes.
+   - **Corrigir Submódulos Destacados**: Corrige submódulos com HEAD destacada.
 
 ## ⚙️ Configuração do Bot no Discord
 
@@ -83,9 +94,12 @@ Um bot do Discord que permite gerenciar repositórios Git remotamente através d
    - Send Messages
    - Use Slash Commands
    - Read Messages/View Channels
+   - Attach Files
+   - Embed Links
+   - Use External Emojis
 6. Use o URL gerado para convidar o bot para seu servidor:
    ```
-   https://discord.com/api/oauth2/authorize?client_id=SEU_CLIENT_ID&permissions=2048&scope=bot%20applications.commands
+   https://discord.com/api/oauth2/authorize?client_id=SEU_CLIENT_ID&permissions=274877975552&scope=bot%20applications.commands
    ```
 
 ## 🔍 Solução de Problemas
@@ -102,7 +116,7 @@ Para registro de comandos em um servidor específico (mais rápido para testes),
 ```javascript
 // Para testes em um servidor específico (substitua GUILD_ID pelo ID do seu servidor)
 const data = await rest.put(
-  Routes.applicationGuildCommands(process.env.CLIENT_ID, 'GUILD_ID'),
+  Routes.applicationGuildCommands(process.env.CLIENT_ID, process.env.GUILD_ID),
   { body: commands },
 );
 ```
@@ -112,15 +126,20 @@ const data = await rest.put(
 ```
 git-manager-discord/
 ├── src/
-│   ├── commands/         # Comandos slash do Discord
-│   ├── utils/            # Funções utilitárias
-│   ├── services/         # Serviços da aplicação
-│   ├── handlers/         # Manipuladores de eventos
-│   ├── index.js          # Arquivo principal do bot
+│   ├── commands/        # Comandos slash do Discord
+│   │   └── init.js      # Comando para inicializar o painel de controle
+│   ├── utils/           # Funções utilitárias
+│   │   └── gitManager.js # Gerenciador de operações Git
+│   ├── services/        # Serviços da aplicação
+│   │   └── panelService.js # Gerenciamento de painéis interativos
+│   ├── handlers/        # Manipuladores de eventos
+│   │   └── buttonHandler.js # Tratamento de interações com botões
+│   ├── index.js         # Arquivo principal do bot
 │   └── deploy-commands.js # Script para registro de comandos
-├── data/                 # Dados da aplicação
-├── .env                  # Variáveis de ambiente (não incluído no Git)
-├── .env.example          # Exemplo de variáveis de ambiente
+├── data/
+│   └── pathHashMap.json # Mapeamento de caminhos para hashes
+├── .env                 # Variáveis de ambiente (não incluído no Git)
+├── .env.example         # Exemplo de variáveis de ambiente
 ├── package.json
 └── README.md
 ```
