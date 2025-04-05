@@ -12,7 +12,6 @@ const {
 const path = require('path');
 const fs = require('fs');
 const GitManager = require('../utils/gitManager');
-const panelService = require('../services/panelService');
 
 const HASH_MAP_FILE = path.join(process.cwd(), 'data', 'pathHashMap.json');
 

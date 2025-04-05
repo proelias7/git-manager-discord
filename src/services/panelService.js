@@ -53,9 +53,6 @@ class PanelService {
       .setDescription(
         '### Bem-vindo ao Painel de Controle Git!\n\n' +
         'Este painel permite gerenciar seus repositórios Git diretamente pelo Discord.\n\n' +
-        '**Comandos disponíveis:**\n' +
-        '• `/panel` - Cria um novo painel de controle\n' +
-        '• `/help` - Exibe informações de ajuda\n\n' +
         'Utilize os botões abaixo para interagir com os repositórios.'
       )
       .setColor(0x4c6ef5)
@@ -73,7 +70,7 @@ class PanelService {
       .setTitle('⏰ Painel Expirado')
       .setDescription(
         'Este painel de controle não está mais disponível.\n\n' +
-        'Por favor, crie um novo painel utilizando o comando `/panel`.'
+        'Por favor, crie um novo painel utilizando o comando `/init`.'
       )
       .setColor(0xfa5252)
       .setFooter({ 

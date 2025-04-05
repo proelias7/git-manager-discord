@@ -1,6 +1,4 @@
 const { SlashCommandBuilder } = require('discord.js');
-const gitManager = require('../utils/gitManager');
-const path = require('path');
 const panelService = require('../services/panelService');
 
 
