@@ -84,6 +84,104 @@ class ButtonHandler {
   }
 
 
+  async cleanupAndReply(interaction) {
+    try {
+      // Verifica se é o painel principal - NÃO deletar o painel inicial
+      const isMainPanel = this.isMainPanel(interaction.message);
+      
+      // Deleta apenas mensagens de interações, não o painel principal
+      if (!isMainPanel && interaction.message && interaction.message.deletable) {
+        await interaction.message.delete();
+        console.log('Mensagem de interação anterior deletada para manter chat limpo');
+      }
+      
+      // Responde normalmente (não ephemeral para permitir futuras interações)
+      await interaction.deferReply({ ephemeral: false });
+    } catch (error) {
+      console.error('Erro ao limpar mensagem anterior:', error);
+      // Se falhar ao deletar, apenas defere a resposta
+      try {
+        await interaction.deferReply({ ephemeral: false });
+      } catch (deferError) {
+        console.error('Erro ao defer reply:', deferError);
+      }
+    }
+  }
+
+
+  async scheduleMessageDeletion(message, delayInSeconds = 30) {
+    try {
+      if (!message || !message.deletable) {
+        return;
+      }
+
+      // Programa a exclusão da mensagem após o tempo especificado
+      setTimeout(async () => {
+        try {
+          if (message.deletable) {
+            await message.delete();
+            console.log(`Mensagem de resultado auto-deletada após ${delayInSeconds} segundos`);
+          }
+        } catch (error) {
+          console.error('Erro ao auto-deletar mensagem:', error);
+        }
+      }, delayInSeconds * 1000);
+      
+    } catch (error) {
+      console.error('Erro ao programar exclusão de mensagem:', error);
+    }
+  }
+
+
+  async sendTemporaryResult(interaction, embed, delayInSeconds = 10) {
+    try {
+      const reply = await interaction.editReply({
+        embeds: [embed],
+        components: []
+      });
+      
+      // Programa a auto-exclusão da mensagem de resultado
+      await this.scheduleMessageDeletion(reply, delayInSeconds);
+      
+      return reply;
+    } catch (error) {
+      console.error('Erro ao enviar resultado temporário:', error);
+      throw error;
+    }
+  }
+
+
+  isMainPanel(message) {
+    if (!message || !message.embeds || message.embeds.length === 0) {
+      return false;
+    }
+    
+    const embed = message.embeds[0];
+    
+    // Verifica se é o painel principal pelo título
+    if (embed.title === '🛠️ Painel de Controle Git') {
+      return true;
+    }
+    
+    // Verifica se é o painel principal pela descrição característica
+    if (embed.description && embed.description.includes('Bem-vindo ao Painel de Controle Git!')) {
+      return true;
+    }
+    
+    return false;
+  }
+
+
+  async cleanupAndUpdate(interaction) {
+    try {
+      // Para interações que usam update ao invés de reply
+      await interaction.deferUpdate();
+    } catch (error) {
+      console.error('Erro ao fazer defer update:', error);
+    }
+  }
+
+
   async handleButtonInteraction(interaction) {
     try {
       const customId = interaction.customId;
@@ -157,6 +255,31 @@ class ButtonHandler {
         await this.handleUpdateAll(interaction, panelId);
       } else if (actionPart === 'status-all') {
         await this.handleStatusAll(interaction, panelId);
+      } else if (actionPart.startsWith('pull-commit-')) {
+        const pathHash = actionPart.replace('pull-commit-', '');
+        const repoPath = this.getRepoPath(pathHash);
+        await this.handlePullWithCommit(interaction, repoPath, panelId);
+      } else if (actionPart.startsWith('pull-stash-')) {
+        const pathHash = actionPart.replace('pull-stash-', '');
+        const repoPath = this.getRepoPath(pathHash);
+        await this.handlePullWithMode(interaction, repoPath, 'stash', panelId);
+      } else if (actionPart.startsWith('pull-force-')) {
+        const pathHash = actionPart.replace('pull-force-', '');
+        const repoPath = this.getRepoPath(pathHash);
+        await this.handlePullWithMode(interaction, repoPath, 'force', panelId);
+      } else if (actionPart.startsWith('pull-cancel-')) {
+        const reply = await interaction.update({
+          components: [],
+          embeds: [
+            new EmbedBuilder()
+              .setTitle('Operação Cancelada')
+              .setDescription('A operação de pull foi cancelada. Suas alterações locais foram mantidas.')
+              .setColor(0x999999)
+              .setFooter({ text: `ID do Painel: ${panelId} | Auto-exclusão em 8s` })
+              .setTimestamp()
+          ]
+        });
+        await this.scheduleMessageDeletion(reply, 8);
       } else if (actionPart.startsWith('pull-')) {
         const repoPath = actionPart.replace('pull-', '');
         await this.handlePullRepository(interaction, repoPath, panelId);
@@ -175,26 +298,10 @@ class ButtonHandler {
       } else if (actionPart.startsWith('commit-')) {
         const repoPath = actionPart.replace('commit-', '');
         await this.handleShowCommitModal(interaction, repoPath, panelId);
-      } else if (actionPart.startsWith('pull-stash-')) {
-        const pathHash = actionPart.replace('pull-stash-', '');
+      } else if (actionPart.startsWith('update-all-commit-')) {
+        const pathHash = actionPart.replace('update-all-commit-', '');
         const repoPath = this.getRepoPath(pathHash);
-        await this.handlePullWithMode(interaction, repoPath, 'stash', panelId);
-      } else if (actionPart.startsWith('pull-force-')) {
-        const pathHash = actionPart.replace('pull-force-', '');
-        const repoPath = this.getRepoPath(pathHash);
-        await this.handlePullWithMode(interaction, repoPath, 'force', panelId);
-      } else if (actionPart.startsWith('pull-cancel-')) {
-        await interaction.update({
-          components: [],
-          embeds: [
-            new EmbedBuilder()
-              .setTitle('Operação Cancelada')
-              .setDescription('A operação de pull foi cancelada. Suas alterações locais foram mantidas.')
-              .setColor(0x999999)
-              .setFooter({ text: `ID do Painel: ${panelId}` })
-              .setTimestamp()
-          ]
-        });
+        await this.handleUpdateAllWithCommit(interaction, repoPath, panelId);
       } else if (actionPart.startsWith('update-all-stash-')) {
         const pathHash = actionPart.replace('update-all-stash-', '');
         const repoPath = this.getRepoPath(pathHash);
@@ -204,17 +311,18 @@ class ButtonHandler {
         const repoPath = this.getRepoPath(pathHash);
         await this.handleUpdateAllWithMode(interaction, repoPath, 'force', panelId);
       } else if (actionPart.startsWith('update-all-cancel-')) {
-        await interaction.update({
+        const reply = await interaction.update({
           components: [],
           embeds: [
             new EmbedBuilder()
               .setTitle('Operação Cancelada')
               .setDescription('A operação de atualização foi cancelada. Suas alterações locais foram mantidas.')
               .setColor(0x999999)
-              .setFooter({ text: `ID do Painel: ${panelId}` })
+              .setFooter({ text: `ID do Painel: ${panelId} | Auto-exclusão em 8s` })
               .setTimestamp()
           ]
         });
+        await this.scheduleMessageDeletion(reply, 8);
       } else {
         await interaction.reply({
           content: `Ação não reconhecida: ${actionPart}`,
@@ -332,7 +440,7 @@ class ButtonHandler {
  
 
   async handleListRepositories(interaction, panelId) {
-    await interaction.deferReply({ ephemeral: true });
+    await this.cleanupAndReply(interaction);
     
     try {
       const repositories = await gitManager.getRepositories();
@@ -456,7 +564,7 @@ class ButtonHandler {
 
 
   async handleRepositorySelected(interaction, panelId) {
-    await interaction.deferReply({ ephemeral: true });
+    await this.cleanupAndReply(interaction);
     
     try {
       const selectedRepoPath = interaction.values[0];
@@ -588,7 +696,7 @@ class ButtonHandler {
 
 
   async handlePullRepository(interaction, repoPath, panelId) {
-    await interaction.deferReply({ ephemeral: true });
+    await this.cleanupAndReply(interaction);
     
     try {
       const progressEmbed = new EmbedBuilder()
@@ -613,6 +721,7 @@ class ButtonHandler {
           )
           .setColor(0xFFA500)
           .addFields(
+            { name: '📝 Commit e Pull', value: 'Commitar alterações locais automaticamente e depois fazer pull', inline: false },
             { name: '💾 Stash', value: 'Salvar alterações locais temporariamente e aplicá-las após o pull', inline: false },
             { name: '⚡ Forçar', value: 'Descartar todas as alterações locais (CUIDADO: mudanças serão perdidas)', inline: false },
             { name: '❌ Cancelar', value: 'Cancelar operação de pull', inline: false }
@@ -622,8 +731,13 @@ class ButtonHandler {
         
         const pathHash = this.mapRepoPath(repoPath);
         
-        const actionButtons = new ActionRowBuilder()
+        const actionButtons1 = new ActionRowBuilder()
           .addComponents(
+            new ButtonBuilder()
+              .setCustomId(`pull-commit-${pathHash}:${panelId}`)
+              .setLabel('Commit e Pull')
+              .setStyle(ButtonStyle.Success)
+              .setEmoji('📝'),
             new ButtonBuilder()
               .setCustomId(`pull-stash-${pathHash}:${panelId}`)
               .setLabel('Stash e Pull')
@@ -633,7 +747,11 @@ class ButtonHandler {
               .setCustomId(`pull-force-${pathHash}:${panelId}`)
               .setLabel('Forçar Pull')
               .setStyle(ButtonStyle.Danger)
-              .setEmoji('⚡'),
+              .setEmoji('⚡')
+          );
+          
+        const actionButtons2 = new ActionRowBuilder()
+          .addComponents(
             new ButtonBuilder()
               .setCustomId(`pull-cancel-${pathHash}:${panelId}`)
               .setLabel('Cancelar')
@@ -643,7 +761,7 @@ class ButtonHandler {
         
         await interaction.editReply({
           embeds: [optionsEmbed],
-          components: [actionButtons]
+          components: [actionButtons1, actionButtons2]
         });
         return;
       }
@@ -652,13 +770,10 @@ class ButtonHandler {
         .setTitle('Pull Concluído')
         .setDescription(result)
         .setColor(0x00FF00)
-        .setFooter({ text: `ID do Painel: ${panelId}` })
+        .setFooter({ text: `ID do Painel: ${panelId} | Auto-exclusão em 10s` })
         .setTimestamp();
       
-      await interaction.editReply({
-        embeds: [resultEmbed],
-        components: []
-      });
+      await this.sendTemporaryResult(interaction, resultEmbed, 10);
     } catch (error) {
       console.error(`Erro ao atualizar repositório ${repoPath}:`, error);
       
@@ -678,7 +793,7 @@ class ButtonHandler {
 
 
   async handlePullWithMode(interaction, repoPath, mode, panelId) {
-    await interaction.deferUpdate();
+    await this.cleanupAndUpdate(interaction);
     
     try {
       const progressEmbed = new EmbedBuilder()
@@ -703,13 +818,10 @@ class ButtonHandler {
         .setTitle('Pull Concluído')
         .setDescription(result)
         .setColor(0x00FF00)
-        .setFooter({ text: `ID do Painel: ${panelId}` })
+        .setFooter({ text: `ID do Painel: ${panelId} | Auto-exclusão em 10s` })
         .setTimestamp();
       
-      await interaction.editReply({
-        embeds: [resultEmbed],
-        components: []
-      });
+      await this.sendTemporaryResult(interaction, resultEmbed, 10);
     } catch (error) {
       console.error(`Erro ao atualizar repositório ${repoPath} com modo ${mode}:`, error);
       
@@ -729,7 +841,7 @@ class ButtonHandler {
 
 
   async handleUpdateAll(interaction, panelId) {
-    await interaction.deferReply({ ephemeral: true });
+    await this.cleanupAndReply(interaction);
     
     try {
       const repositories = await gitManager.getRepositories();
@@ -764,6 +876,7 @@ class ButtonHandler {
           )
           .setColor(0xFFA500)
           .addFields(
+            { name: '📝 Commit e Update', value: 'Commitar alterações locais automaticamente e depois fazer update', inline: false },
             { name: '💾 Stash', value: 'Salvar alterações locais temporariamente e aplicá-las após o pull', inline: false },
             { name: '⚡ Forçar', value: 'Descartar todas as alterações locais (CUIDADO: mudanças serão perdidas)', inline: false },
             { name: '❌ Cancelar', value: 'Cancelar operação de atualização', inline: false }
@@ -773,8 +886,13 @@ class ButtonHandler {
         
         const pathHash = this.mapRepoPath(mainRepo.path);
         
-        const actionButtons = new ActionRowBuilder()
+        const actionButtons1 = new ActionRowBuilder()
           .addComponents(
+            new ButtonBuilder()
+              .setCustomId(`update-all-commit-${pathHash}:${panelId}`)
+              .setLabel('Commit e Update')
+              .setStyle(ButtonStyle.Success)
+              .setEmoji('📝'),
             new ButtonBuilder()
               .setCustomId(`update-all-stash-${pathHash}:${panelId}`)
               .setLabel('Stash e Update')
@@ -784,7 +902,11 @@ class ButtonHandler {
               .setCustomId(`update-all-force-${pathHash}:${panelId}`)
               .setLabel('Forçar Update')
               .setStyle(ButtonStyle.Danger)
-              .setEmoji('⚡'),
+              .setEmoji('⚡')
+          );
+          
+        const actionButtons2 = new ActionRowBuilder()
+          .addComponents(
             new ButtonBuilder()
               .setCustomId(`update-all-cancel-${pathHash}:${panelId}`)
               .setLabel('Cancelar')
@@ -794,7 +916,7 @@ class ButtonHandler {
         
         await interaction.editReply({
           embeds: [optionsEmbed],
-          components: [actionButtons]
+          components: [actionButtons1, actionButtons2]
         });
         return;
       }
@@ -803,13 +925,10 @@ class ButtonHandler {
         .setTitle('Atualização Concluída')
         .setDescription(`Resultado: ${result}`)
         .setColor(0x00FF00)
-        .setFooter({ text: `ID do Painel: ${panelId}` })
+        .setFooter({ text: `ID do Painel: ${panelId} | Auto-exclusão em 10s` })
         .setTimestamp();
       
-      await interaction.editReply({
-        embeds: [resultEmbed],
-        components: []
-      });
+      await this.sendTemporaryResult(interaction, resultEmbed, 10);
     } catch (error) {
       console.error('Erro ao atualizar repositórios:', error);
       
@@ -828,7 +947,7 @@ class ButtonHandler {
 
 
   async handleUpdateAllWithMode(interaction, repoPath, mode, panelId) {
-    await interaction.deferUpdate();
+    await this.cleanupAndUpdate(interaction);
     
     try {
       const progressEmbed = new EmbedBuilder()
@@ -879,7 +998,7 @@ class ButtonHandler {
 
 
   async handleUpdateSubmodules(interaction, repoPath, panelId) {
-    await interaction.deferReply({ ephemeral: true });
+    await this.cleanupAndReply(interaction);
     
     try {
       const progressEmbed = new EmbedBuilder()
@@ -923,7 +1042,7 @@ class ButtonHandler {
 
 
   async handleFixDetached(interaction, repoPath, panelId) {
-    await interaction.deferReply({ ephemeral: true });
+    await this.cleanupAndReply(interaction);
     
     try {
       const progressEmbed = new EmbedBuilder()
@@ -971,7 +1090,7 @@ class ButtonHandler {
 
 
   async handleFixAllDetachedForRepo(interaction, repoPath, panelId) {
-    await interaction.deferReply({ ephemeral: true });
+    await this.cleanupAndReply(interaction);
     
     try {
       const progressEmbed = new EmbedBuilder()
@@ -1019,7 +1138,7 @@ class ButtonHandler {
 
 
   async handleInitSubmodules(interaction, repoPath, panelId) {
-    await interaction.deferReply({ ephemeral: true });
+    await this.cleanupAndReply(interaction);
     
     try {
       const progressEmbed = new EmbedBuilder()
@@ -1095,7 +1214,7 @@ class ButtonHandler {
   }
 
   async handleCommitModalSubmit(interaction, repoPath, panelId) {
-    await interaction.deferReply({ ephemeral: true });
+    await this.cleanupAndReply(interaction);
     
     try {
       const realPath = this.getRepoPath(repoPath) || repoPath;
@@ -1146,7 +1265,7 @@ class ButtonHandler {
 
 
   async handleStatusAll(interaction, panelId) {
-    await interaction.deferReply({ ephemeral: true });
+    await this.cleanupAndReply(interaction);
     
     try {
       const repositories = await gitManager.getRepositories();
@@ -1290,6 +1409,98 @@ class ButtonHandler {
         
       await interaction.editReply({
         embeds: [errorEmbed]
+      });
+    }
+  }
+
+
+  async handlePullWithCommit(interaction, repoPath, panelId) {
+    await this.cleanupAndUpdate(interaction);
+    
+    try {
+      const progressEmbed = new EmbedBuilder()
+        .setTitle('Commitando e Atualizando Repositório')
+        .setDescription(
+          `Fazendo commit automático das alterações locais e executando pull em: ${path.basename(repoPath)}`
+        )
+        .setColor(0x0099FF)
+        .setFooter({ text: `ID do Painel: ${panelId}` })
+        .setTimestamp();
+      
+      await interaction.editReply({
+        embeds: [progressEmbed],
+        components: []
+      });
+      
+      const result = await gitManager.commitAndPull(repoPath, false);
+      
+      const resultEmbed = new EmbedBuilder()
+        .setTitle('Commit e Pull Concluídos')
+        .setDescription(result)
+        .setColor(0x00FF00)
+        .setFooter({ text: `ID do Painel: ${panelId} | Auto-exclusão em 10s` })
+        .setTimestamp();
+      
+      await this.sendTemporaryResult(interaction, resultEmbed, 10);
+    } catch (error) {
+      console.error(`Erro ao fazer commit e pull do repositório ${repoPath}:`, error);
+      
+      const errorEmbed = new EmbedBuilder()
+        .setTitle('Erro no Commit e Pull')
+        .setDescription(`Falha ao fazer commit e atualizar repositório: ${error.message}`)
+        .setColor(0xFF0000)
+        .setFooter({ text: `ID do Painel: ${panelId}` })
+        .setTimestamp();
+      
+      await interaction.editReply({
+        embeds: [errorEmbed],
+        components: []
+      });
+    }
+  }
+
+
+  async handleUpdateAllWithCommit(interaction, repoPath, panelId) {
+    await this.cleanupAndUpdate(interaction);
+    
+    try {
+      const progressEmbed = new EmbedBuilder()
+        .setTitle('Commitando e Atualizando Repositório')
+        .setDescription(
+          `Fazendo commit automático das alterações locais e atualizando: ${path.basename(repoPath)}`
+        )
+        .setColor(0x0099FF)
+        .setFooter({ text: `ID do Painel: ${panelId}` })
+        .setTimestamp();
+      
+      await interaction.editReply({
+        embeds: [progressEmbed],
+        components: []
+      });
+      
+      const result = await gitManager.commitAndPull(repoPath, true);
+      
+      const resultEmbed = new EmbedBuilder()
+        .setTitle('Commit e Atualização Concluídos')
+        .setDescription(result)
+        .setColor(0x00FF00)
+        .setFooter({ text: `ID do Painel: ${panelId} | Auto-exclusão em 10s` })
+        .setTimestamp();
+      
+      await this.sendTemporaryResult(interaction, resultEmbed, 10);
+    } catch (error) {
+      console.error(`Erro ao fazer commit e atualizar repositório ${repoPath}:`, error);
+      
+      const errorEmbed = new EmbedBuilder()
+        .setTitle('Erro no Commit e Atualização')
+        .setDescription(`Falha ao fazer commit e atualizar: ${error.message}`)
+        .setColor(0xFF0000)
+        .setFooter({ text: `ID do Painel: ${panelId}` })
+        .setTimestamp();
+      
+      await interaction.editReply({
+        embeds: [errorEmbed],
+        components: []
       });
     }
   }

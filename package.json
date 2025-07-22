@@ -1,6 +1,6 @@
 {
   "name": "git-manager-discord",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Bot do Discord para gerenciar repositórios Git",
   "main": "src/index.js",
   "scripts": {
@@ -9,7 +9,7 @@
     "deploy-commands": "node src/deploy-commands.js"
   },
   "dependencies": {
-    "discord.js": "^14.14.1",
+    "discord.js": "^14.21.0",
     "dotenv": "^16.3.1",
     "simple-git": "^3.22.0"
   },
@@ -33,4 +33,4 @@
   "engines": {
     "node": ">=16.x"
   }
-} 
+}

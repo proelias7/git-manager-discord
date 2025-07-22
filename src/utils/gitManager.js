@@ -39,6 +39,60 @@ class GitManager {
   }
 
 
+  async ensureSafeDirectory(repoPath) {
+    try {
+      // Tenta uma operação simples para verificar se há problemas de ownership
+      const git = simpleGit(repoPath);
+      await git.raw(['config', '--get', 'user.name']);
+    } catch (error) {
+      if (error.message && error.message.includes('dubious ownership')) {
+        console.log(`Detectado problema de dubious ownership em: ${repoPath}`);
+        console.log('Configurando diretório como seguro...');
+        
+        try {
+          // Configura o diretório como seguro globalmente
+          await execPromise(`git config --global --add safe.directory "${repoPath}"`);
+          console.log(`Diretório ${repoPath} configurado como seguro com sucesso`);
+          
+          // Também configura submódulos se existirem
+          await this.ensureSafeSubmodules(repoPath);
+        } catch (configError) {
+          console.error(`Erro ao configurar diretório seguro: ${configError.message}`);
+          // Não falha completamente, apenas registra o erro
+        }
+      } else if (error.message && error.message.includes('not a git repository')) {
+        // Ignora se não for um repositório Git
+        return;
+      } else {
+        // Para outros erros, apenas registra mas não falha
+        console.warn(`Aviso ao verificar diretório ${repoPath}: ${error.message}`);
+      }
+    }
+  }
+
+
+  async ensureSafeSubmodules(repoPath) {
+    try {
+      const submodules = await this.getSubmodules(repoPath);
+      
+      for (const submodule of submodules) {
+        const submodulePath = path.join(repoPath, submodule.path);
+        
+        if (fs.existsSync(path.join(submodulePath, '.git'))) {
+          try {
+            await execPromise(`git config --global --add safe.directory "${submodulePath}"`);
+            console.log(`Submódulo ${submodulePath} configurado como seguro`);
+          } catch (subError) {
+            console.warn(`Aviso ao configurar submódulo seguro ${submodulePath}: ${subError.message}`);
+          }
+        }
+      }
+    } catch (error) {
+      console.warn(`Aviso ao configurar submódulos seguros: ${error.message}`);
+    }
+  }
+
+
   async getRepositories() {
     try {
 
@@ -183,6 +237,7 @@ class GitManager {
 
   async pullRepository(repoPath, includeSubmodules = false, mode = 'normal') {
     try {
+      await this.ensureSafeDirectory(repoPath);
       const git = simpleGit(repoPath);
       let pullResult;
       
@@ -320,6 +375,7 @@ class GitManager {
 
   async updateSubmodules(repoPath) {
     try {
+      await this.ensureSafeDirectory(repoPath);
       const git = simpleGit(repoPath);
       
       const hasSubmodules = await this.hasSubmodules(repoPath);
@@ -339,6 +395,7 @@ class GitManager {
 
   async initSubmodules(repoPath) {
     try {
+      await this.ensureSafeDirectory(repoPath);
       const git = simpleGit(repoPath);
       
       const hasSubmodules = await this.hasSubmodules(repoPath);
@@ -359,6 +416,7 @@ class GitManager {
 
   async fixDetachedSubmodules(repoPath) {
     try {
+      await this.ensureSafeDirectory(repoPath);
       const submodules = await this.getSubmodules(repoPath);
       
       if (submodules.length === 0) {
@@ -536,6 +594,7 @@ class GitManager {
 
   async commitAndPush(repoPath, message) {
     try {
+      await this.ensureSafeDirectory(repoPath);
       const git = simpleGit(repoPath);
       
       const status = await git.status();
@@ -559,6 +618,7 @@ class GitManager {
 
   async getRepositoryStatus(repoPath) {
     try {
+      await this.ensureSafeDirectory(repoPath);
       const git = simpleGit(repoPath);
       
       const status = await git.status();
@@ -641,6 +701,83 @@ class GitManager {
     } catch (error) {
       console.error(`Erro ao obter status do repositório ${repoPath}:`, error);
       throw new Error(`Erro ao obter status do repositório: ${error.message}`);
+    }
+  }
+
+
+  async commitAndPull(repoPath, includeSubmodules = false) {
+    try {
+      await this.ensureSafeDirectory(repoPath);
+      const git = simpleGit(repoPath);
+      
+      const status = await git.status();
+      if (status.files.length === 0) {
+        // Se não há mudanças locais, apenas fazer pull
+        const pullResult = await this.pullRepository(repoPath, includeSubmodules, 'normal');
+        return `Não há mudanças locais para commitar.\n\nPull: ${pullResult}`;
+      }
+      
+      // Contar arquivos que serão commitados
+      const filesCount = status.files.length;
+      const modifiedFiles = status.files.filter(f => f.working_dir === 'M' || f.index === 'M').length;
+      const newFiles = status.files.filter(f => f.working_dir === '?' || f.index === 'A').length;
+      const deletedFiles = status.files.filter(f => f.working_dir === 'D' || f.index === 'D').length;
+      
+      // Gerar mensagem de commit automática com timestamp
+      const timestamp = new Date().toLocaleString('pt-BR', {
+        timeZone: 'America/Sao_Paulo',
+        year: 'numeric',
+        month: '2-digit',
+        day: '2-digit',
+        hour: '2-digit',
+        minute: '2-digit'
+      });
+      
+      const commitMessage = `Auto-commit: Mudanças locais commitadas automaticamente - ${timestamp}`;
+      
+      // Adicionar todas as mudanças
+      await git.add('.');
+      
+      // Fazer commit
+      await git.commit(commitMessage);
+      console.log(`Commit automático realizado: ${commitMessage}`);
+      
+      // Fazer push das mudanças commitadas
+      let pushSuccess = false;
+      try {
+        await git.push();
+        console.log('Push realizado com sucesso após commit automático');
+        pushSuccess = true;
+      } catch (pushError) {
+        console.warn('Aviso: Não foi possível fazer push, mas o commit foi realizado. Continuando com pull...');
+      }
+      
+      // Agora fazer pull para verificar atualizações do remoto
+      let pullInfo = '';
+      try {
+        const pullResult = await this.pullRepository(repoPath, includeSubmodules, 'normal');
+        if (pullResult.includes('0 arquivos alterados')) {
+          pullInfo = 'Repositório remoto já estava atualizado.';
+        } else {
+          pullInfo = pullResult;
+        }
+      } catch (pullError) {
+        pullInfo = 'Erro ao fazer pull após commit, mas commit foi realizado com sucesso.';
+      }
+      
+      let resultMessage = `✅ Commit automático realizado com sucesso!\n`;
+      resultMessage += `📁 Arquivos processados: ${filesCount} arquivos\n`;
+      if (modifiedFiles > 0) resultMessage += `📝 Modificados: ${modifiedFiles}\n`;
+      if (newFiles > 0) resultMessage += `➕ Novos: ${newFiles}\n`;
+      if (deletedFiles > 0) resultMessage += `➖ Removidos: ${deletedFiles}\n`;
+      resultMessage += `💬 Mensagem: "${commitMessage}"\n`;
+      resultMessage += pushSuccess ? `📤 Push: Realizado com sucesso\n` : `⚠️ Push: Falhou, mas commit foi salvo localmente\n`;
+      resultMessage += `🔄 Pull: ${pullInfo}`;
+      
+      return resultMessage;
+    } catch (error) {
+      console.error(`Erro ao fazer commit e pull em ${repoPath}:`, error);
+      throw new Error(`Erro ao fazer commit e pull: ${error.message}`);
     }
   }
 }
