@@ -12,7 +12,7 @@
 Um bot do Discord que permite gerenciar repositórios Git remotamente através de slash commands e interfaces interativas. Gerencie seus repositórios, submódulos e execute operações Git comuns como pull, commit e push diretamente pelo Discord.
 
 <div align="center">
-  <img src="https://media.discordapp.net/attachments/931304471164772372/1358221633504018713/image.png?ex=67f30df7&is=67f1bc77&hm=be1013b11159b5f01e47c5bc623f191a5b580a11890fe57c7f099b5529394016&=&format=webp&quality=lossless&width=935&height=419" alt="Git Manager Discord Preview" width="70%">
+  <img src="https://git-scm.com/images/logos/downloads/Git-Icon-1788C.png" alt="Git Logo" width="200">
 </div>
 
 ## ✨ Funcionalidades
