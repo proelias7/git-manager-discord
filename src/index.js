@@ -5,6 +5,7 @@ const { Client, Collection, GatewayIntentBits, Events } = require('discord.js');
 
 const GitManager = require('./utils/gitManager');
 const ButtonHandler = require('./handlers/buttonHandler');
+const WebhookService = require('./services/webhookService');
 
 const client = new Client({
   intents: [
@@ -17,6 +18,7 @@ client.commands = new Collection();
 
 const gitManager = new GitManager(process.env.GIT_BASE_PATH);
 const buttonHandler = new ButtonHandler();
+let webhookService = null;
 
 buttonHandler.setClient(client);
 
@@ -37,6 +39,15 @@ for (const file of commandFiles) {
 
 client.once(Events.ClientReady, () => {
   console.log(`Bot online! Logado como ${client.user.tag}`);
+  
+  // Iniciar servidor de webhook do GitHub
+  if (process.env.ENABLE_GITHUB_WEBHOOK === 'true') {
+    webhookService = new WebhookService(gitManager, client);
+    webhookService.start();
+    console.log('✅ Serviço de webhook GitHub habilitado');
+  } else {
+    console.log('ℹ️ Serviço de webhook GitHub desabilitado (ENABLE_GITHUB_WEBHOOK não está definido como true)');
+  }
 });
 
 client.on(Events.InteractionCreate, async interaction => {

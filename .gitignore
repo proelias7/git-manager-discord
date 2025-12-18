@@ -19,6 +19,9 @@ logs
 .DS_Store
 Thumbs.db
 
+# Arquivos gerados automaticamente
+start.bat
+
 # Diretório de repositórios de exemplo (caso seja usado para testes)
 repositories/
 

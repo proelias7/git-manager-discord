@@ -1,16 +1,22 @@
 {
   "name": "git-manager-discord",
-  "version": "1.0.1",
+  "version": "1.1.0",
   "description": "Bot do Discord para gerenciar repositórios Git",
   "main": "src/index.js",
   "scripts": {
     "start": "node src/index.js",
+    "start:prod": "pm2 start ecosystem.config.js",
+    "start:pm2": "pm2 start ecosystem.config.js",
+    "stop:pm2": "pm2 stop git-manager-discord",
+    "restart:pm2": "pm2 restart git-manager-discord",
+    "logs:pm2": "pm2 logs git-manager-discord",
     "dev": "nodemon src/index.js",
     "deploy-commands": "node src/deploy-commands.js"
   },
   "dependencies": {
     "discord.js": "^14.21.0",
     "dotenv": "^16.3.1",
+    "express": "^5.2.1",
     "simple-git": "^3.22.0"
   },
   "devDependencies": {
