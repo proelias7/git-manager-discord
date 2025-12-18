@@ -5,6 +5,7 @@
 ![License](https://img.shields.io/github/license/proelias7/git-manager-discord)
 ![Node](https://img.shields.io/badge/Node.js-16.x+-339933?logo=node.js&logoColor=white)
 ![Discord](https://img.shields.io/badge/Discord-Bot-5865F2?logo=discord&logoColor=white)
+![Git](https://img.shields.io/badge/Git-F05032?logo=git&logoColor=white)
 
 </div>
 
