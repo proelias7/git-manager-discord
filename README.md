@@ -59,10 +59,10 @@ Um bot do Discord que permite gerenciar repositórios Git remotamente através d
    GIT_BASE_PATH=caminho/para/seus/repositorios
    GUILD_ID=id_do_servidor_aqui
    
-   # Configuração do webhook GitHub (opcional)
+   # Configuração do webhook GitHub/GitLab (opcional)
    ENABLE_GITHUB_WEBHOOK=false
    WEBHOOK_PORT=3001
-   GITHUB_WEBHOOK_SECRET=
+   WEBHOOK_SECRET=
    DISCORD_WEBHOOK_CHANNEL_ID=
    ```
 
@@ -186,7 +186,7 @@ O bot pode receber webhooks do GitHub e executar pull automático quando um comm
    git push
    ```
 
-📘 **Guia completo:** Veja [GITHUB_WEBHOOK_SETUP.md](GITHUB_WEBHOOK_SETUP.md) para instruções detalhadas.
+📘 **Guia completo:** Veja [WEBHOOK_SETUP.md](WEBHOOK_SETUP.md) para instruções detalhadas (GitHub e GitLab).
 
 ## 📁 Estrutura do Projeto
 
