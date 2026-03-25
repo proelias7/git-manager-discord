@@ -61,10 +61,30 @@ function peek() {
   return loadQueue();
 }
 
+/**
+ * Remove um caminho da fila, se existir.
+ * @param {string} repoPath
+ * @returns {boolean} true se removeu
+ */
+function remove(repoPath) {
+  const n = path.normalize(repoPath);
+  const paths = loadQueue();
+  const next = paths.filter((p) => path.normalize(p) !== n);
+  const removed = next.length < paths.length;
+  saveQueue(next);
+  return removed;
+}
+
+function clear() {
+  saveQueue([]);
+}
+
 module.exports = {
   enqueue,
   dequeueAll,
   peek,
+  remove,
+  clear,
   loadQueue,
   saveQueue
 };

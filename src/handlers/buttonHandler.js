@@ -35,8 +35,104 @@ class ButtonHandler {
     }
     
     this.initPathHashMap();
+    /** @type {Map<string, { mode: string, pathHash?: string|null, userIds?: string[], userIdToRemove?: string|null }>} */
+    this.accessWizardState = new Map();
   }
-  
+
+  accessWizardKey(userId, panelId) {
+    return `${userId}:${panelId}`;
+  }
+
+  clearAccessWizardState(key) {
+    this.accessWizardState.delete(key);
+  }
+
+  /**
+   * Resolve apelido/tag para mostrar no embed e no StringSelect (membro do servidor ou API user).
+   * @param {import('discord.js').Guild | null} guild
+   * @param {string} userId
+   * @returns {Promise<{ label: string, description: string, embedLine: string, summaryLine: string }>}
+   */
+  async resolveUserDisplayForAccess(guild, userId) {
+    try {
+      if (guild) {
+        const member = await guild.members.fetch(userId).catch(() => null);
+        if (member) {
+          const tag = member.user?.tag ?? member.user?.username ?? userId;
+          const dn = (member.displayName || member.user?.username || 'user').slice(0, 60);
+          const shortId = userId.length > 8 ? `…${userId.slice(-6)}` : userId;
+          return {
+            label: `${dn} ${shortId}`.slice(0, 100),
+            description: `ID ${userId}`.slice(0, 100),
+            embedLine: `• **${dn}** · \`${tag}\` — <@${userId}>`,
+            summaryLine: `**${dn}** (${tag}) — <@${userId}>`
+          };
+        }
+      }
+      if (this.client) {
+        const u = await this.client.users.fetch(userId).catch(() => null);
+        if (u) {
+          const dn = (u.globalName || u.username).slice(0, 60);
+          return {
+            label: `${dn} · ${userId.slice(-6)}`.slice(0, 100),
+            description: `ID ${userId}`.slice(0, 100),
+            embedLine: `• **${dn}** · \`${u.tag}\` — <@${userId}>`,
+            summaryLine: `**${dn}** (${u.tag}) — <@${userId}>`
+          };
+        }
+      }
+    } catch (_) {
+      /* fallback abaixo */
+    }
+    return {
+      label: `ID ${userId}`.slice(0, 100),
+      description: 'Utilizador',
+      embedLine: `• <@${userId}> — \`${userId}\``,
+      summaryLine: `<@${userId}> (\`${userId}\`)`
+    };
+  }
+
+  /**
+   * @param {import('discord.js').Guild | null} guild
+   * @param {string[]} userIds
+   */
+  async buildAccessListEmbedBlock(guild, userIds) {
+    if (!userIds.length) {
+      return '*Ninguém na lista — só quem tem o cargo admin Git pode usar até alguém ser adicionado.*';
+    }
+    const lines = [];
+    for (const id of userIds) {
+      const info = await this.resolveUserDisplayForAccess(guild, id);
+      lines.push(info.embedLine);
+    }
+    let text = lines.join('\n');
+    if (text.length > 3500) {
+      text = `${lines.slice(0, 20).join('\n')}\n*… e mais ${userIds.length - 20} utilizador(es).*`;
+    }
+    return text;
+  }
+
+  /**
+   * @param {import('discord.js').Guild | null} guild
+   * @param {string[]} userIds
+   * @param {string | null} defaultUserId
+   */
+  async buildRemoveUserSelectOptions(guild, userIds, defaultUserId) {
+    const slice = userIds.slice(0, 25);
+    const options = [];
+    for (const uid of slice) {
+      const info = await this.resolveUserDisplayForAccess(guild, uid);
+      const opt = new StringSelectMenuOptionBuilder()
+        .setLabel(info.label)
+        .setValue(uid)
+        .setDescription(info.description);
+      if (defaultUserId && uid === defaultUserId) {
+        opt.setDefault(true);
+      }
+      options.push(opt);
+    }
+    return options;
+  }
 
   initPathHashMap() {
     if (!global.pathHashMap) {
@@ -176,7 +272,38 @@ class ButtonHandler {
       return true;
     }
 
-    const panelMainActions = ['list-repos', 'sync-all', 'update-all', 'status-all', 'fix-all-detached'];
+    if (actionPart.startsWith('access-wizard-')) {
+      if (!gitPermissions.isGitAdmin(member)) {
+        await interaction.reply({
+          content: 'Apenas administradores Git podem gerir acessos.',
+          ephemeral: true
+        });
+        return false;
+      }
+      return true;
+    }
+
+    if (actionPart === 'scheduled-pulls-clear') {
+      if (!gitPermissions.isGitAdmin(member)) {
+        await interaction.reply({
+          content: 'Apenas administradores Git podem esvaziar a fila inteira.',
+          ephemeral: true
+        });
+        return false;
+      }
+      return true;
+    }
+
+    const panelMainActions = [
+      'list-repos',
+      'sync-all',
+      'update-all',
+      'status-all',
+      'fix-all-detached',
+      'scheduled-pulls',
+      'scheduled-pulls-close',
+      'scheduled-pull-remove'
+    ];
     if (panelMainActions.includes(actionPart)) {
       if (!mainPath || !gitPermissions.canUserActOnGit(member, mainPath)) {
         await interaction.reply({
@@ -227,14 +354,14 @@ class ButtonHandler {
       .setDescription(
         `**${path.basename(repoPath)}** foi adicionado à fila para o próximo horário de reinício ` +
           '(pull automático alguns minutos antes, conforme `RESTART_SCHEDULE` no `.env`).\n' +
-          `Caminhos únicos na fila: **${queued}**.`
+          `Caminhos únicos na fila: **${queued}**.\n\n` +
+          'No painel principal use **Pulls agendados** para ver ou retirar da fila.'
       )
       .setColor(0x3498db)
       .setFooter({ text: `ID do Painel: ${panelId} | Auto-exclusão em 15s` })
       .setTimestamp();
     await interaction.editReply({ embeds: [embed], components: [] });
-    const reply = await interaction.fetchReply();
-    await this.scheduleMessageDeletion(reply, 15);
+    await this.scheduleInteractionReplyDeletion(interaction, 15);
   }
 
   /**
@@ -257,6 +384,146 @@ class ButtonHandler {
     }
   }
 
+  /**
+   * Embed + componentes do painel **Pulls agendados** (fila persistida).
+   * @param {string} panelId
+   * @param {import('discord.js').GuildMember | null} member
+   */
+  async buildScheduledPullsPanelPayload(panelId, member) {
+    const paths = restartPullQueue.peek();
+    let desc = '';
+    if (paths.length === 0) {
+      desc =
+        'A fila está **vazia**. Repositórios entram aqui quando o pull é enfileirado para o próximo ' +
+        'reinício agendado (ex.: submódulos ou repositório principal com pull só no restart).';
+    } else {
+      const lines = paths.map((p, i) => `${i + 1}. **${path.basename(p)}**\n\`${p}\``);
+      desc =
+        `**${paths.length}** repositório(s) na fila (serão processados no próximo ciclo do agendador):\n\n` +
+        `${lines.join('\n\n')}`;
+      if (desc.length > 3800) {
+        desc = `${desc.slice(0, 3797)}…`;
+      }
+      desc +=
+        '\n\n*No menu abaixo pode **retirar** da fila os repositórios em que tem permissão Git.*';
+    }
+
+    const removable = member
+      ? paths.filter((p) => gitPermissions.canUserActOnGit(member, p))
+      : [];
+    if (paths.length > 0 && removable.length === 0 && member) {
+      desc +=
+        '\n\n*Não pode remover entradas: não tem permissão em nenhum destes repositórios (ou peça um admin Git).*';
+    }
+    if (removable.length > 25) {
+      desc +=
+        '\n\n*Só os primeiros 25 removíveis aparecem no menu; remova e reabra para ver o resto.*';
+    }
+    if (desc.length > 4090) {
+      desc = `${desc.slice(0, 4087)}…`;
+    }
+
+    const embed = new EmbedBuilder()
+      .setTitle('⏱️ Pulls agendados')
+      .setDescription(desc)
+      .setColor(0x3498db)
+      .setFooter({ text: `data/restartPullQueue.json | Painel: ${panelId}` })
+      .setTimestamp();
+
+    const components = [];
+    if (removable.length > 0) {
+      const slice = removable.slice(0, 25);
+      const options = slice.map((p) => {
+        const pathHash = this.mapRepoPath(p);
+        return new StringSelectMenuOptionBuilder()
+          .setLabel(path.basename(p).slice(0, 100))
+          .setValue(pathHash)
+          .setDescription((p.length > 100 ? `…${p.slice(-99)}` : p).slice(0, 100));
+      });
+      components.push(
+        new ActionRowBuilder().addComponents(
+          new StringSelectMenuBuilder()
+            .setCustomId(`scheduled-pull-remove:${panelId}`)
+            .setPlaceholder('Remover da fila…')
+            .addOptions(options)
+        )
+      );
+    }
+
+    const closeRow = new ActionRowBuilder().addComponents(
+      new ButtonBuilder()
+        .setCustomId(`scheduled-pulls-close:${panelId}`)
+        .setLabel('Fechar')
+        .setStyle(ButtonStyle.Secondary)
+        .setEmoji('✖')
+    );
+    if (member && gitPermissions.isGitAdmin(member) && paths.length > 0) {
+      closeRow.addComponents(
+        new ButtonBuilder()
+          .setCustomId(`scheduled-pulls-clear:${panelId}`)
+          .setLabel('Limpar fila')
+          .setStyle(ButtonStyle.Danger)
+          .setEmoji('🗑️')
+      );
+    }
+    components.push(closeRow);
+
+    return { embeds: [embed], components };
+  }
+
+  async handleScheduledPulls(interaction, panelId) {
+    await interaction.deferReply({ ephemeral: true });
+    const payload = await this.buildScheduledPullsPanelPayload(panelId, interaction.member);
+    await interaction.editReply(payload);
+  }
+
+  async handleScheduledPullsClose(interaction, panelId) {
+    await interaction.deferUpdate();
+    await interaction.editReply({
+      content: 'Painel de pulls agendados fechado.',
+      embeds: [],
+      components: []
+    });
+    await this.scheduleInteractionReplyDeletion(interaction, 6);
+  }
+
+  async handleScheduledPullsClear(interaction, panelId) {
+    await interaction.deferUpdate();
+    if (!gitPermissions.isGitAdmin(interaction.member)) {
+      await interaction.followUp({
+        content: 'Apenas administradores Git podem esvaziar a fila.',
+        ephemeral: true
+      });
+      return;
+    }
+    restartPullQueue.clear();
+    const payload = await this.buildScheduledPullsPanelPayload(panelId, interaction.member);
+    await interaction.editReply(payload);
+  }
+
+  async handleScheduledPullRemove(interaction, panelId) {
+    await interaction.deferUpdate();
+    const pathHash = interaction.values[0];
+    const repoPath = this.getRepoPath(pathHash);
+    if (!repoPath) {
+      await interaction.editReply({
+        content: 'Entrada inválida. Abra **Pulls agendados** outra vez.',
+        embeds: [],
+        components: []
+      });
+      return;
+    }
+    if (!gitPermissions.canUserActOnGit(interaction.member, repoPath)) {
+      await interaction.followUp({
+        content: 'Sem permissão para remover este repositório da fila.',
+        ephemeral: true
+      });
+      return;
+    }
+    restartPullQueue.remove(repoPath);
+    const payload = await this.buildScheduledPullsPanelPayload(panelId, interaction.member);
+    await interaction.editReply(payload);
+  }
 
   async cleanupAndReply(interaction) {
     try {
@@ -306,18 +573,38 @@ class ButtonHandler {
     }
   }
 
+  /**
+   * Apaga a resposta da interação (deferReply/editReply) via API de webhook.
+   * Mais fiável do que message.delete() quando deletable vem false em respostas do bot.
+   * @param {import('discord.js').Interaction} interaction
+   * @param {number} delayInSeconds
+   */
+  async scheduleInteractionReplyDeletion(interaction, delayInSeconds = 10) {
+    setTimeout(async () => {
+      try {
+        await interaction.deleteReply();
+        console.log(`Resposta da interação apagada após ${delayInSeconds}s`);
+      } catch (e) {
+        console.error('Erro ao deleteReply:', e?.message || e);
+        try {
+          const msg = await interaction.fetchReply().catch(() => null);
+          if (msg?.deletable) await msg.delete();
+        } catch (e2) {
+          console.error('Erro ao apagar mensagem (fallback):', e2?.message || e2);
+        }
+      }
+    }, delayInSeconds * 1000);
+  }
+
 
   async sendTemporaryResult(interaction, embed, delayInSeconds = 10) {
     try {
-      const reply = await interaction.editReply({
+      await interaction.editReply({
         embeds: [embed],
         components: []
       });
-      
-      // Programa a auto-exclusão da mensagem de resultado
-      await this.scheduleMessageDeletion(reply, delayInSeconds);
-      
-      return reply;
+
+      this.scheduleInteractionReplyDeletion(interaction, delayInSeconds);
     } catch (error) {
       console.error('Erro ao enviar resultado temporário:', error);
       throw error;
@@ -359,19 +646,29 @@ class ButtonHandler {
   async handleButtonInteraction(interaction) {
     try {
       const customId = interaction.customId;
-      
-      const lastColonIndex = customId.lastIndexOf(':');
-      if (lastColonIndex === -1) {
-        await interaction.reply({
-          content: 'Formato de botão inválido. Por favor, use o comando `/init` para criar um novo painel.',
-          ephemeral: true
-        });
-        return;
+
+      /** Adicionar/Remover com repositório: access-wizard-(add|remove):pathHash(16):panelId */
+      const accessRepoBtn = /^access-wizard-(add|remove):([a-f0-9]{16}):(.+)$/.exec(customId);
+
+      let panelId;
+      let actionPart;
+
+      if (accessRepoBtn) {
+        actionPart = `access-wizard-${accessRepoBtn[1]}`;
+        panelId = accessRepoBtn[3];
+      } else {
+        const lastColonIndex = customId.lastIndexOf(':');
+        if (lastColonIndex === -1) {
+          await interaction.reply({
+            content: 'Formato de botão inválido. Por favor, use o comando `/init` para criar um novo painel.',
+            ephemeral: true
+          });
+          return;
+        }
+        panelId = customId.substring(lastColonIndex + 1);
+        actionPart = customId.substring(0, lastColonIndex);
       }
-      
-      const panelId = customId.substring(lastColonIndex + 1);
-      const actionPart = customId.substring(0, lastColonIndex);
-      
+
       console.log(`Processando ação de botão: ${actionPart} para painel: ${panelId}`);
 
       const permissionOk = await this.assertPermissionForGitAction(interaction, actionPart);
@@ -382,6 +679,39 @@ class ButtonHandler {
       if (actionPart === 'manage-access') {
         await this.handleManageAccess(interaction, panelId);
         return;
+      }
+
+      if (accessRepoBtn) {
+        const pathHash = accessRepoBtn[2];
+        if (accessRepoBtn[1] === 'add') {
+          await this.handleAccessWizardOpenAdd(interaction, panelId, pathHash);
+        } else {
+          await this.handleAccessWizardOpenRemove(interaction, panelId, pathHash);
+        }
+        return;
+      }
+
+      if (actionPart.startsWith('access-wizard-')) {
+        if (actionPart === 'access-wizard-confirm-add') {
+          await this.handleAccessWizardConfirmAdd(interaction, panelId);
+          return;
+        }
+        if (actionPart === 'access-wizard-confirm-remove') {
+          await this.handleAccessWizardConfirmRemove(interaction, panelId);
+          return;
+        }
+        if (actionPart === 'access-wizard-cancel') {
+          await this.handleAccessWizardCancel(interaction, panelId);
+          return;
+        }
+        if (actionPart === 'access-wizard-back-remove') {
+          await this.handleAccessWizardBackToMain(interaction, panelId);
+          return;
+        }
+        if (actionPart === 'access-wizard-close') {
+          await this.handleAccessWizardClose(interaction, panelId);
+          return;
+        }
       }
 
       if (actionPart.startsWith('fix-all-detached-')) {
@@ -439,6 +769,12 @@ class ButtonHandler {
         await this.handleUpdateAll(interaction, panelId);
       } else if (actionPart === 'status-all') {
         await this.handleStatusAll(interaction, panelId);
+      } else if (actionPart === 'scheduled-pulls') {
+        await this.handleScheduledPulls(interaction, panelId);
+      } else if (actionPart === 'scheduled-pulls-close') {
+        await this.handleScheduledPullsClose(interaction, panelId);
+      } else if (actionPart === 'scheduled-pulls-clear') {
+        await this.handleScheduledPullsClear(interaction, panelId);
       } else if (actionPart.startsWith('pull-commit-')) {
         const pathHash = actionPart.replace('pull-commit-', '');
         const repoPath = this.getRepoPath(pathHash);
@@ -555,11 +891,24 @@ class ButtonHandler {
 
       if (actionPart === 'select-repo') {
         await this.handleRepositorySelected(interaction, panelId);
-      } else if (actionPart === 'access-pick-repo') {
-        await this.handleAccessPickRepo(interaction, panelId);
-      } else if (actionPart.startsWith('access-user-rm:')) {
-        const pathHash = actionPart.substring('access-user-rm:'.length);
-        await this.handleAccessUserRemoveSelect(interaction, panelId, pathHash);
+      } else if (actionPart === 'access-wizard-main-repo') {
+        if (!gitPermissions.isGitAdmin(interaction.member)) {
+          await interaction.reply({ content: 'Apenas administradores Git.', ephemeral: true });
+          return;
+        }
+        await this.handleAccessMainRepoSelect(interaction, panelId);
+      } else if (actionPart === 'scheduled-pull-remove') {
+        const permissionOk = await this.assertPermissionForGitAction(interaction, actionPart);
+        if (!permissionOk) {
+          return;
+        }
+        await this.handleScheduledPullRemove(interaction, panelId);
+      } else if (actionPart === 'access-wizard-user-remove') {
+        if (!gitPermissions.isGitAdmin(interaction.member)) {
+          await interaction.reply({ content: 'Apenas administradores Git.', ephemeral: true });
+          return;
+        }
+        await this.handleAccessWizardUserRemovePick(interaction, panelId);
       } else {
         await interaction.reply({
           content: `Ação de menu não reconhecida: ${actionPart}`,
@@ -627,6 +976,64 @@ class ButtonHandler {
     }
   }
 
+  async renderManageAccessMainPanel(panelId) {
+    const embed = new EmbedBuilder()
+      .setTitle('Gerir acessos')
+      .setDescription(
+        'Escolha **Adicionar** ou **Remover** utilizador.\n\n' +
+          '1. Selecione o **repositório** no menu abaixo.\n' +
+          '2. Depois use **Adicionar** ou **Remover** (os botões ficam ativos após escolher o repositório).\n\n' +
+          '• **Adicionar:** escolha utilizadores no menu e **Confirmar**.\n' +
+          '• **Remover:** escolha o utilizador e **Confirmar**.\n' +
+          '• **Cancelar** volta a este menu sem guardar (pode continuar a gerir).\n' +
+          '• **Fechar** encerra o painel **Gerir acessos**.'
+      )
+      .setColor(0x5865f2)
+      .setFooter({ text: `ID do Painel: ${panelId}` })
+      .setTimestamp();
+
+    const options = await this.buildAccessWizardRepoOptions();
+    const rowSelect = new ActionRowBuilder().addComponents(
+      new StringSelectMenuBuilder()
+        .setCustomId(`access-wizard-main-repo:${panelId}`)
+        .setPlaceholder('Selecione o repositório')
+        .addOptions(options)
+    );
+    const rowBtns = new ActionRowBuilder().addComponents(
+      new ButtonBuilder()
+        .setCustomId(`access-wizard-add-pending:${panelId}`)
+        .setLabel('Adicionar utilizador')
+        .setStyle(ButtonStyle.Success)
+        .setEmoji('➕')
+        .setDisabled(true),
+      new ButtonBuilder()
+        .setCustomId(`access-wizard-remove-pending:${panelId}`)
+        .setLabel('Remover utilizador')
+        .setStyle(ButtonStyle.Danger)
+        .setEmoji('➖')
+        .setDisabled(true)
+    );
+
+    return {
+      embeds: [embed],
+      components: [rowSelect, rowBtns, this.buildAccessWizardCloseRow(panelId)]
+    };
+  }
+
+  /**
+   * Botão para fechar o fluxo **Gerir acessos** (mensagem ephemeral).
+   * @param {string} panelId
+   */
+  buildAccessWizardCloseRow(panelId) {
+    return new ActionRowBuilder().addComponents(
+      new ButtonBuilder()
+        .setCustomId(`access-wizard-close:${panelId}`)
+        .setLabel('Fechar')
+        .setStyle(ButtonStyle.Secondary)
+        .setEmoji('✖')
+    );
+  }
+
   async handleManageAccess(interaction, panelId) {
     await interaction.deferReply({ ephemeral: true });
     const repos = await gitManager.getRepositories();
@@ -634,140 +1041,426 @@ class ButtonHandler {
       await interaction.editReply({ content: 'Nenhum repositório encontrado.' });
       return;
     }
-    const slice = repos.slice(0, 25);
-    const options = slice.map((repo) => {
+    const payload = await this.renderManageAccessMainPanel(panelId);
+    await interaction.editReply(payload);
+  }
+
+  /**
+   * @param {string | null} selectedPathHash
+   */
+  async buildAccessWizardRepoOptions(selectedPathHash = null) {
+    const repos = await gitManager.getRepositories();
+    return repos.slice(0, 25).map((repo) => {
       const pathHash = this.mapRepoPath(repo.path);
       let label = repo.name;
       if (repo.isSubmodule) label = `${repo.name} (sub)`;
-      return new StringSelectMenuOptionBuilder()
+      const opt = new StringSelectMenuOptionBuilder()
         .setLabel(label.slice(0, 100))
         .setValue(pathHash)
         .setDescription((repo.path || '').slice(0, 100));
-    });
-    const row = new ActionRowBuilder().addComponents(
-      new StringSelectMenuBuilder()
-        .setCustomId(`access-pick-repo:${panelId}`)
-        .setPlaceholder('Escolha o repositório')
-        .addOptions(options)
-    );
-    await interaction.editReply({
-      content: 'Selecione o repositório para ver e gerir utilizadores autorizados.',
-      components: [row]
+      if (selectedPathHash && pathHash === selectedPathHash) {
+        opt.setDefault(true);
+      }
+      return opt;
     });
   }
 
-  async handleAccessPickRepo(interaction, panelId) {
-    if (!gitPermissions.isGitAdmin(interaction.member)) {
-      await interaction.reply({ content: 'Apenas administradores Git podem gerir acessos.', ephemeral: true });
-      return;
-    }
+  async handleAccessMainRepoSelect(interaction, panelId) {
+    await interaction.deferUpdate();
     const pathHash = interaction.values[0];
     const repoPath = this.getRepoPath(pathHash);
+    const options = await this.buildAccessWizardRepoOptions(pathHash);
+
+    const guild = interaction.guild;
+    const withAccess = repoPath ? repoUserAccess.getUsersForRepo(repoPath) : [];
+    const listBlock = await this.buildAccessListEmbedBlock(guild, withAccess);
+
+    const embed = new EmbedBuilder()
+      .setTitle('Gerir acessos')
+      .setDescription(
+        `**Repositório selecionado:** \`${repoPath || '(inválido)'}\`\n\n` +
+          `**Quem tem acesso** (${withAccess.length}):\n${listBlock}\n\n` +
+          'Use **Adicionar** ou **Remover** para alterar a lista.\n\n' +
+          '**Fechar** encerra este painel.'
+      )
+      .setColor(0x5865f2)
+      .setFooter({ text: `ID do Painel: ${panelId}` })
+      .setTimestamp();
+
+    const rowSelect = new ActionRowBuilder().addComponents(
+      new StringSelectMenuBuilder()
+        .setCustomId(`access-wizard-main-repo:${panelId}`)
+        .setPlaceholder('Selecione o repositório')
+        .addOptions(options)
+    );
+    const rowBtns = new ActionRowBuilder().addComponents(
+      new ButtonBuilder()
+        .setCustomId(`access-wizard-add:${pathHash}:${panelId}`)
+        .setLabel('Adicionar utilizador')
+        .setStyle(ButtonStyle.Success)
+        .setEmoji('➕'),
+      new ButtonBuilder()
+        .setCustomId(`access-wizard-remove:${pathHash}:${panelId}`)
+        .setLabel('Remover utilizador')
+        .setStyle(ButtonStyle.Danger)
+        .setEmoji('➖')
+    );
+
+    await interaction.editReply({
+      embeds: [embed],
+      components: [rowSelect, rowBtns, this.buildAccessWizardCloseRow(panelId)]
+    });
+  }
+
+  async handleAccessWizardClose(interaction, panelId) {
+    await interaction.deferUpdate();
+    const key = this.accessWizardKey(interaction.user.id, panelId);
+    this.clearAccessWizardState(key);
+    await interaction.editReply({
+      content: '**Gerir acessos** fechado.',
+      embeds: [],
+      components: []
+    });
+    await this.scheduleInteractionReplyDeletion(interaction, 8);
+  }
+
+  async handleAccessWizardBackToMain(interaction, panelId) {
+    await interaction.deferUpdate();
+    const payload = await this.renderManageAccessMainPanel(panelId);
+    await interaction.editReply(payload);
+  }
+
+  async handleAccessWizardOpenAdd(interaction, panelId, pathHash) {
+    await interaction.deferUpdate();
+    const key = this.accessWizardKey(interaction.user.id, panelId);
+    this.accessWizardState.set(key, { mode: 'add', pathHash, userIds: [] });
+
+    const repoPath = this.getRepoPath(pathHash);
+    const guild = interaction.guild;
+    const already = repoPath ? repoUserAccess.getUsersForRepo(repoPath) : [];
+    const listBlock = await this.buildAccessListEmbedBlock(guild, already);
+
+    const embed = new EmbedBuilder()
+      .setTitle('Adicionar utilizador')
+      .setDescription(
+        `**Repositório:** \`${repoPath || '(inválido)'}\`\n\n` +
+          `**Quem já tem acesso** (${already.length}):\n${listBlock}\n\n` +
+          'Use o menu **Utilizadores a adicionar** para escolher quem acrescentar à lista e clique em **Confirmar** (ou **Cancelar**).'
+      )
+      .setColor(0x57f287)
+      .setFooter({ text: `Painel: ${panelId}` })
+      .setTimestamp();
+
+    const rowUser = new ActionRowBuilder().addComponents(
+      new UserSelectMenuBuilder()
+        .setCustomId(`access-wizard-user-add:${panelId}`)
+        .setPlaceholder('Utilizadores a adicionar')
+        .setMinValues(1)
+        .setMaxValues(10)
+    );
+    const rowBtns = new ActionRowBuilder().addComponents(
+      new ButtonBuilder()
+        .setCustomId(`access-wizard-confirm-add:${panelId}`)
+        .setLabel('Confirmar')
+        .setStyle(ButtonStyle.Success),
+      new ButtonBuilder()
+        .setCustomId(`access-wizard-cancel:${panelId}`)
+        .setLabel('Cancelar')
+        .setStyle(ButtonStyle.Secondary)
+    );
+
+    await interaction.editReply({ embeds: [embed], components: [rowUser, rowBtns] });
+  }
+
+  async handleAccessWizardUserAddSelect(interaction, panelId) {
+    const userIds = interaction.values;
+    const key = this.accessWizardKey(interaction.user.id, panelId);
+    const st = this.accessWizardState.get(key) || { mode: 'add', pathHash: null, userIds: [] };
+    st.mode = 'add';
+    st.userIds = userIds;
+    this.accessWizardState.set(key, st);
+
+    await interaction.deferUpdate();
+
+    const repoPath = st.pathHash ? this.getRepoPath(st.pathHash) : null;
+    const guild = interaction.guild;
+    const already = repoPath ? repoUserAccess.getUsersForRepo(repoPath) : [];
+    const listBlock = await this.buildAccessListEmbedBlock(guild, already);
+
+    const pickedLines = [];
+    for (const id of userIds) {
+      const info = await this.resolveUserDisplayForAccess(guild, id);
+      pickedLines.push(`• ${info.summaryLine}`);
+    }
+    const usersLine = pickedLines.join('\n');
+
+    const embed = new EmbedBuilder()
+      .setTitle('Adicionar utilizador')
+      .setDescription(
+        `**Repositório:** ${repoPath ? `\`${repoPath}\`` : '*(inválido)*'}\n\n` +
+          `**Quem já tem acesso** (${already.length}):\n${listBlock}\n\n` +
+          `**A adicionar agora:**\n${usersLine}\n\n` +
+          'Clique em **Confirmar** para guardar ou **Cancelar**.'
+      )
+      .setColor(0x57f287)
+      .setFooter({ text: `Painel: ${panelId}` })
+      .setTimestamp();
+
+    const rowUser = new ActionRowBuilder().addComponents(
+      new UserSelectMenuBuilder()
+        .setCustomId(`access-wizard-user-add:${panelId}`)
+        .setPlaceholder('Utilizadores a adicionar')
+        .setMinValues(1)
+        .setMaxValues(10)
+    );
+    const rowBtns = new ActionRowBuilder().addComponents(
+      new ButtonBuilder()
+        .setCustomId(`access-wizard-confirm-add:${panelId}`)
+        .setLabel('Confirmar')
+        .setStyle(ButtonStyle.Success),
+      new ButtonBuilder()
+        .setCustomId(`access-wizard-cancel:${panelId}`)
+        .setLabel('Cancelar')
+        .setStyle(ButtonStyle.Secondary)
+    );
+
+    await interaction.editReply({ embeds: [embed], components: [rowUser, rowBtns] });
+  }
+
+  async handleAccessWizardConfirmAdd(interaction, panelId) {
+    const key = this.accessWizardKey(interaction.user.id, panelId);
+    const st = this.accessWizardState.get(key);
+    if (!st?.pathHash || !st.userIds?.length) {
+      await interaction.reply({
+        content:
+          'Escolha primeiro **um ou mais utilizadores** no menu **Utilizadores a adicionar** e só depois clique em **Confirmar**.',
+        ephemeral: true
+      });
+      return;
+    }
+    const repoPath = this.getRepoPath(st.pathHash);
     if (!repoPath) {
-      await interaction.reply({ content: 'Seleção inválida. Abra **Gerir acessos** novamente.', ephemeral: true });
+      this.clearAccessWizardState(key);
+      await interaction.reply({
+        content: 'Repositório inválido. Abra **Gerir acessos** novamente.',
+        ephemeral: true
+      });
+      return;
+    }
+
+    await interaction.deferUpdate();
+    for (const id of st.userIds) {
+      repoUserAccess.addUser(repoPath, id);
+    }
+    const n = st.userIds.length;
+    this.clearAccessWizardState(key);
+
+    const payload = await this.renderManageAccessMainPanel(panelId);
+    await interaction.editReply({
+      content:
+        `**${n}** utilizador(es) adicionado(s) ao repositório \`${repoPath}\`.\n` +
+          '— *Menu de ações abaixo: pode escolher outro repositório ou adicionar/remover de novo.*',
+      embeds: payload.embeds,
+      components: payload.components
+    });
+  }
+
+  async handleAccessWizardOpenRemove(interaction, panelId, pathHash) {
+    await interaction.deferUpdate();
+    const key = this.accessWizardKey(interaction.user.id, panelId);
+    const st = { mode: 'remove', pathHash, userIdToRemove: null };
+    this.accessWizardState.set(key, st);
+
+    const repoPath = this.getRepoPath(pathHash);
+    if (!repoPath) {
+      await interaction.followUp({ content: 'Repositório inválido.', ephemeral: true });
       return;
     }
     const users = repoUserAccess.getUsersForRepo(repoPath);
-    const embed = new EmbedBuilder()
-      .setTitle('Gerir acessos ao repositório')
-      .setDescription(
-        `**Caminho:** \`${repoPath}\`\n\n` +
-          '**Utilizadores autorizados:**\n' +
-          (users.length ? users.map((id) => `• <@${id}>`).join('\n') : '*(nenhum — apenas o cargo admin Git pode usar até adicionar alguém)*')
-      )
-      .setColor(0x5865f2)
-      .setFooter({ text: 'Adicione ou remova utilizadores abaixo.' });
+    const guild = interaction.guild;
 
-    const userAdd = new UserSelectMenuBuilder()
-      .setCustomId(`access-user-add:${pathHash}:${panelId}`)
-      .setPlaceholder('Adicionar utilizadores ao repositório')
-      .setMinValues(1)
-      .setMaxValues(10);
-
-    const rows = [new ActionRowBuilder().addComponents(userAdd)];
-
-    if (users.length > 0) {
-      const rmOptions = users.slice(0, 25).map((uid) =>
-        new StringSelectMenuOptionBuilder()
-          .setLabel(`Remover ${uid}`)
-          .setValue(uid)
-          .setDescription('Remove este utilizador')
-      );
-      rows.push(
-        new ActionRowBuilder().addComponents(
-          new StringSelectMenuBuilder()
-            .setCustomId(`access-user-rm:${pathHash}:${panelId}`)
-            .setPlaceholder('Remover um utilizador')
-            .addOptions(rmOptions)
+    if (users.length === 0) {
+      const embed = new EmbedBuilder()
+        .setTitle('Remover utilizador')
+        .setDescription(
+          `**Repositório:** \`${repoPath}\`\n\n*Não há utilizadores nesta lista (só o admin Git por cargo).*`
         )
+        .setColor(0xed4245)
+        .setFooter({ text: `Painel: ${panelId}` })
+        .setTimestamp();
+      const rowBack = new ActionRowBuilder().addComponents(
+        new ButtonBuilder()
+          .setCustomId(`access-wizard-back-remove:${panelId}`)
+          .setLabel('« Voltar')
+          .setStyle(ButtonStyle.Primary),
+        new ButtonBuilder()
+          .setCustomId(`access-wizard-cancel:${panelId}`)
+          .setLabel('Cancelar')
+          .setStyle(ButtonStyle.Secondary)
       );
+      await interaction.editReply({ embeds: [embed], components: [rowBack] });
+      return;
     }
 
-    const backRow = new ActionRowBuilder().addComponents(
-      new StringSelectMenuBuilder()
-        .setCustomId(`access-pick-repo:${panelId}`)
-        .setPlaceholder('Trocar de repositório')
-        .addOptions(
-          (await gitManager.getRepositories()).slice(0, 25).map((repo) => {
-            const ph = this.mapRepoPath(repo.path);
-            let label = repo.name;
-            if (repo.isSubmodule) label = `${repo.name} (sub)`;
-            return new StringSelectMenuOptionBuilder()
-              .setLabel(label.slice(0, 100))
-              .setValue(ph)
-              .setDescription((repo.path || '').slice(0, 100));
-          })
-        )
-    );
-    rows.push(backRow);
+    const defaultUid = users[0];
+    st.userIdToRemove = defaultUid;
+    this.accessWizardState.set(key, st);
 
-    await interaction.update({ embeds: [embed], components: rows });
+    const listBlock = await this.buildAccessListEmbedBlock(guild, users);
+    const firstPick = await this.resolveUserDisplayForAccess(guild, defaultUid);
+
+    const userOptions = await this.buildRemoveUserSelectOptions(guild, users, defaultUid);
+
+    const embed = new EmbedBuilder()
+      .setTitle('Remover utilizador')
+      .setDescription(
+        `**Repositório:** \`${repoPath}\`\n\n` +
+          `**Quem tem acesso** (${users.length}):\n${listBlock}\n\n` +
+          `**A remover (pré-selecionado):** ${firstPick.summaryLine}\n` +
+          'Altere no menu abaixo ou clique em **Confirmar**.'
+      )
+      .setColor(0xed4245)
+      .setFooter({ text: `Painel: ${panelId}` })
+      .setTimestamp();
+
+    const rowUser = new ActionRowBuilder().addComponents(
+      new StringSelectMenuBuilder()
+        .setCustomId(`access-wizard-user-remove:${panelId}`)
+        .setPlaceholder('Escolha quem remover da lista')
+        .addOptions(userOptions)
+    );
+    const rowBtns = new ActionRowBuilder().addComponents(
+      new ButtonBuilder()
+        .setCustomId(`access-wizard-confirm-remove:${panelId}`)
+        .setLabel('Confirmar')
+        .setStyle(ButtonStyle.Danger),
+      new ButtonBuilder()
+        .setCustomId(`access-wizard-cancel:${panelId}`)
+        .setLabel('Cancelar')
+        .setStyle(ButtonStyle.Secondary),
+      new ButtonBuilder()
+        .setCustomId(`access-wizard-back-remove:${panelId}`)
+        .setLabel('« Voltar')
+        .setStyle(ButtonStyle.Secondary)
+    );
+
+    await interaction.editReply({ embeds: [embed], components: [rowUser, rowBtns] });
   }
 
-  async handleAccessUserRemoveSelect(interaction, panelId, pathHash) {
-    if (!gitPermissions.isGitAdmin(interaction.member)) {
-      await interaction.reply({ content: 'Apenas administradores Git.', ephemeral: true });
-      return;
-    }
-    const repoPath = this.getRepoPath(pathHash);
-    if (!repoPath) {
-      await interaction.reply({ content: 'Repositório inválido.', ephemeral: true });
-      return;
-    }
+  async handleAccessWizardUserRemovePick(interaction, panelId) {
     const uid = interaction.values[0];
-    repoUserAccess.removeUser(repoPath, uid);
-    await interaction.reply({
-      content: `Utilizador removido de \`${repoPath}\`. Reabra **Gerir acessos** para atualizar a vista.`,
-      ephemeral: true
+    const key = this.accessWizardKey(interaction.user.id, panelId);
+    const st = this.accessWizardState.get(key) || { mode: 'remove' };
+    st.userIdToRemove = uid;
+    this.accessWizardState.set(key, st);
+
+    await interaction.deferUpdate();
+
+    const repoPath = st.pathHash ? this.getRepoPath(st.pathHash) : null;
+    const guild = interaction.guild;
+    const users = repoPath ? repoUserAccess.getUsersForRepo(repoPath) : [];
+    const listBlock = await this.buildAccessListEmbedBlock(guild, users);
+    const pickInfo = await this.resolveUserDisplayForAccess(guild, uid);
+
+    const embed = new EmbedBuilder()
+      .setTitle('Remover utilizador')
+      .setDescription(
+        `**Repositório:** \`${repoPath || ''}\`\n\n` +
+          `**Quem tem acesso** (${users.length}):\n${listBlock}\n\n` +
+          `**A remover (selecionado):** ${pickInfo.summaryLine}\n\n` +
+          'Clique em **Confirmar** para guardar ou **Cancelar**.'
+      )
+      .setColor(0xed4245)
+      .setFooter({ text: `Painel: ${panelId}` })
+      .setTimestamp();
+
+    const userOptions = await this.buildRemoveUserSelectOptions(guild, users, uid);
+
+    const rowUser = new ActionRowBuilder().addComponents(
+      new StringSelectMenuBuilder()
+        .setCustomId(`access-wizard-user-remove:${panelId}`)
+        .setPlaceholder('Escolha quem remover da lista')
+        .addOptions(userOptions)
+    );
+    const rowBtns = new ActionRowBuilder().addComponents(
+      new ButtonBuilder()
+        .setCustomId(`access-wizard-confirm-remove:${panelId}`)
+        .setLabel('Confirmar')
+        .setStyle(ButtonStyle.Danger),
+      new ButtonBuilder()
+        .setCustomId(`access-wizard-cancel:${panelId}`)
+        .setLabel('Cancelar')
+        .setStyle(ButtonStyle.Secondary),
+      new ButtonBuilder()
+        .setCustomId(`access-wizard-back-remove:${panelId}`)
+        .setLabel('« Voltar')
+        .setStyle(ButtonStyle.Secondary)
+    );
+
+    await interaction.editReply({ embeds: [embed], components: [rowUser, rowBtns] });
+  }
+
+  async handleAccessWizardConfirmRemove(interaction, panelId) {
+    const key = this.accessWizardKey(interaction.user.id, panelId);
+    const st = this.accessWizardState.get(key);
+    if (!st?.pathHash || !st.userIdToRemove) {
+      await interaction.reply({
+        content:
+          'Selecione o **utilizador** no menu (ou use o pré-selecionado) e só depois clique em **Confirmar**.',
+        ephemeral: true
+      });
+      return;
+    }
+    const repoPath = this.getRepoPath(st.pathHash);
+    if (!repoPath) {
+      this.clearAccessWizardState(key);
+      await interaction.reply({
+        content: 'Repositório inválido.',
+        ephemeral: true
+      });
+      return;
+    }
+
+    await interaction.deferUpdate();
+    repoUserAccess.removeUser(repoPath, st.userIdToRemove);
+    this.clearAccessWizardState(key);
+
+    const payload = await this.renderManageAccessMainPanel(panelId);
+    await interaction.editReply({
+      content:
+        `Utilizador removido de \`${repoPath}\`.\n` +
+          '— *Menu de ações abaixo: pode escolher outro repositório ou adicionar/remover de novo.*',
+      embeds: payload.embeds,
+      components: payload.components
+    });
+  }
+
+  async handleAccessWizardCancel(interaction, panelId) {
+    await interaction.deferUpdate();
+    const key = this.accessWizardKey(interaction.user.id, panelId);
+    this.clearAccessWizardState(key);
+    const payload = await this.renderManageAccessMainPanel(panelId);
+    await interaction.editReply({
+      content:
+        'Operação cancelada — voltou ao **menu de ações**. Pode continuar a gerir abaixo.',
+      embeds: payload.embeds,
+      components: payload.components
     });
   }
 
   async handleUserSelectInteraction(interaction) {
     const customId = interaction.customId;
     const parts = customId.split(':');
-    if (parts[0] !== 'access-user-add' || parts.length !== 3) {
-      await interaction.reply({ content: 'Menu inválido.', ephemeral: true });
+    if (parts[0] === 'access-wizard-user-add' && parts.length === 2) {
+      const panelId = parts[1];
+      if (!gitPermissions.isGitAdmin(interaction.member)) {
+        await interaction.reply({ content: 'Apenas administradores Git.', ephemeral: true });
+        return;
+      }
+      await this.handleAccessWizardUserAddSelect(interaction, panelId);
       return;
     }
-    const pathHash = parts[1];
-    const panelId = parts[2];
-    if (!gitPermissions.isGitAdmin(interaction.member)) {
-      await interaction.reply({ content: 'Apenas administradores Git.', ephemeral: true });
-      return;
-    }
-    const repoPath = this.getRepoPath(pathHash);
-    if (!repoPath) {
-      await interaction.reply({ content: 'Repositório inválido.', ephemeral: true });
-      return;
-    }
-    const ids = interaction.values;
-    for (const id of ids) {
-      repoUserAccess.addUser(repoPath, id);
-    }
-    await interaction.reply({
-      content: `**${ids.length}** utilizador(es) adicionado(s) ao repositório. Volte a selecionar o repositório em **Gerir acessos** para ver a lista atualizada.`,
-      ephemeral: true
-    });
+    await interaction.reply({ content: 'Menu inválido.', ephemeral: true });
   }
 
 
@@ -1133,6 +1826,7 @@ class ButtonHandler {
         embeds: [errorEmbed],
         components: []
       });
+      await this.scheduleInteractionReplyDeletion(interaction, 15);
     }
   }
 
@@ -1151,6 +1845,7 @@ class ButtonHandler {
           .setFooter({ text: `ID do Painel: ${panelId}` })
           .setTimestamp();
         await interaction.editReply({ embeds: [warn], components: [] });
+        await this.scheduleInteractionReplyDeletion(interaction, 15);
         return;
       }
 
@@ -1194,6 +1889,7 @@ class ButtonHandler {
         embeds: [errorEmbed],
         components: []
       });
+      await this.scheduleInteractionReplyDeletion(interaction, 15);
     }
   }
 
@@ -1306,6 +2002,7 @@ class ButtonHandler {
       await interaction.editReply({
         embeds: [errorEmbed]
       });
+      await this.scheduleInteractionReplyDeletion(interaction, 15);
     }
   }
 
@@ -1342,13 +2039,10 @@ class ButtonHandler {
         .setTitle('Atualização Concluída')
         .setDescription(desc)
         .setColor(0x00FF00)
-        .setFooter({ text: `ID do Painel: ${panelId}` })
+        .setFooter({ text: `ID do Painel: ${panelId} | Auto-exclusão em 10s` })
         .setTimestamp();
       
-      await interaction.editReply({
-        embeds: [resultEmbed],
-        components: []
-      });
+      await this.sendTemporaryResult(interaction, resultEmbed, 10);
     } catch (error) {
       console.error(`Erro ao atualizar repositórios com modo ${mode}:`, error);
       
@@ -1363,6 +2057,7 @@ class ButtonHandler {
         embeds: [errorEmbed],
         components: []
       });
+      await this.scheduleInteractionReplyDeletion(interaction, 15);
     }
   }
 

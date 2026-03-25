@@ -20,7 +20,7 @@ class PanelService {
 
       const embed = this.createPanelEmbed();
       
-      const components = [this.createPanelButtons()];
+      const components = this.createPanelButtons();
       
       this.activePanels.set(this.panelId, {
         messageId: null,
@@ -81,29 +81,36 @@ class PanelService {
 
 
   createPanelButtons() {
-    return new ActionRowBuilder()
-      .addComponents(
-        new ButtonBuilder()
-          .setCustomId(`list-repos:${this.panelId}`)
-          .setLabel('Listar Repositórios')
-          .setStyle(ButtonStyle.Primary)
-          .setEmoji('📚'),
-        new ButtonBuilder()
-          .setCustomId(`sync-all:${this.panelId}`)
-          .setLabel('Atualizar Todos')
-          .setStyle(ButtonStyle.Success)
-          .setEmoji('🔄'),
-        new ButtonBuilder()
-          .setCustomId(`status-all:${this.panelId}`)
-          .setLabel('Status Geral')
-          .setStyle(ButtonStyle.Secondary)
-          .setEmoji('📊'),
-        new ButtonBuilder()
-          .setCustomId(`manage-access:${this.panelId}`)
-          .setLabel('Gerir acessos')
-          .setStyle(ButtonStyle.Secondary)
-          .setEmoji('🔐')
-      );
+    const row1 = new ActionRowBuilder().addComponents(
+      new ButtonBuilder()
+        .setCustomId(`list-repos:${this.panelId}`)
+        .setLabel('Listar Repositórios')
+        .setStyle(ButtonStyle.Primary)
+        .setEmoji('📚'),
+      new ButtonBuilder()
+        .setCustomId(`sync-all:${this.panelId}`)
+        .setLabel('Atualizar Todos')
+        .setStyle(ButtonStyle.Success)
+        .setEmoji('🔄'),
+      new ButtonBuilder()
+        .setCustomId(`status-all:${this.panelId}`)
+        .setLabel('Status Geral')
+        .setStyle(ButtonStyle.Secondary)
+        .setEmoji('📊'),
+      new ButtonBuilder()
+        .setCustomId(`manage-access:${this.panelId}`)
+        .setLabel('Gerir acessos')
+        .setStyle(ButtonStyle.Secondary)
+        .setEmoji('🔐')
+    );
+    const row2 = new ActionRowBuilder().addComponents(
+      new ButtonBuilder()
+        .setCustomId(`scheduled-pulls:${this.panelId}`)
+        .setLabel('Pulls agendados')
+        .setStyle(ButtonStyle.Secondary)
+        .setEmoji('⏳')
+    );
+    return [row1, row2];
   }
 
 
