@@ -25,7 +25,9 @@ Um bot do Discord que permite gerenciar repositórios Git remotamente através d
 - 📤 Adicionar, commitar alterações e fazer push com uma interface de modal interativa
 - 🔁 Atualizar todos os repositórios com uma única ação
 - 🚨 Suporte a modos de pull: normal, com stash e force
-- 🔗 **Webhook GitHub**: Pull automático quando commits contêm `@pull` na mensagem
+- 🔐 **Permissões por repositório**: cargo de administrador Git (`GIT_ADMIN_ROLE_ID`) com acesso total; outros utilizadores só nos repositórios em que forem autorizados; gestão pelo painel **Gerir acessos** (lista em `data/repoUserAccess.json`)
+- ⏱️ **Pull antes do reinício** (opcional): agendamento com `RESTART_SCHEDULE` e políticas em `data/repoPolicy.json` para filas e caminhos só no horário de reinício
+- 🔗 **Webhook GitHub/GitLab**: Pull automático quando commits contêm `@pull` na mensagem
 - 📡 **Servidor Webhook**: Endpoint HTTP para receber webhooks do GitHub
 - 🔔 **Notificações Discord**: Receba notificações de pulls automáticos em um canal específico
 
@@ -33,8 +35,9 @@ Um bot do Discord que permite gerenciar repositórios Git remotamente através d
 
 - Node.js 16.x ou superior
 - Um aplicativo Discord registrado com um bot
-- Permissões de administrador para o bot no servidor Discord
-- Acesso aos repositórios Git que deseja gerenciar
+- Permissões mínimas no servidor para o bot (mensagens, comandos slash, embeds, etc. — ver secção abaixo)
+- **Quem pode usar o painel:** definido por `GIT_ADMIN_ROLE_ID` e pela lista por repositório; ou, em bootstrap, **Administrador** do Discord quando ainda não há utilizadores no repositório principal (ver `GIT_ADMIN_ROLE_ID` no `.env.example`)
+- Acesso de leitura/escrita aos repositórios Git no diretório configurado em `GIT_BASE_PATH`
 
 ## 🚀 Instalação
 
@@ -51,19 +54,31 @@ Um bot do Discord que permite gerenciar repositórios Git remotamente através d
    npm install
    ```
 
-3. Configure o arquivo `.env` com suas credenciais (use o arquivo `.env.example` como referência):
+3. Configure o arquivo `.env` com suas credenciais (use o [`.env.example`](.env.example) como referência completa):
    ```env
    # Configuração básica do bot
    BOT_TOKEN=seu_token_aqui
    CLIENT_ID=seu_client_id_aqui
    GIT_BASE_PATH=caminho/para/seus/repositorios
    GUILD_ID=id_do_servidor_aqui
-   
-   # Configuração do webhook GitHub/GitLab (opcional)
+
+   # Permissões Discord (painel Git) — ver comentários no .env.example
+   GIT_ADMIN_ROLE_ID=id_do_cargo_admin_git
+
+   # Webhook GitHub/GitLab (opcional)
    ENABLE_GITHUB_WEBHOOK=false
    WEBHOOK_PORT=3001
    WEBHOOK_SECRET=
    DISCORD_WEBHOOK_CHANNEL_ID=
+   AUTO_REPO_MAPPING=true
+
+   # Pull agendado antes do reinício (opcional)
+   RESTART_SCHEDULE_ENABLED=true
+   RESTART_SCHEDULE=
+   RESTART_PULL_LEAD_MINUTES=2
+
+   # Deploy automático dos comandos slash ao iniciar o bot
+   AUTO_DEPLOY_COMMANDS=true
    ```
 
 4. Registre os comandos slash no Discord:
@@ -100,6 +115,7 @@ Um bot do Discord que permite gerenciar repositórios Git remotamente através d
    - **Listar Repositórios**: Mostra todos os repositórios e submódulos disponíveis no caminho base configurado.
    - **Atualizar Todos**: Atualiza todos os repositórios e submódulos com uma única ação.
    - **Status Geral**: Verifica o status de todos os repositórios.
+   - **Gerir acessos** (apenas quem tem o cargo `GIT_ADMIN_ROLE_ID`): escolhe um repositório e adiciona ou remove utilizadores autorizados a usar comandos Git nesse caminho.
 
 3. Ao selecionar um repositório específico, você terá acesso a ações como:
    - **Pull**: Atualiza o repositório local com as mudanças do remoto.
@@ -108,14 +124,13 @@ Um bot do Discord que permite gerenciar repositórios Git remotamente através d
    - **Atualizar Submódulos**: Atualiza submódulos existentes.
    - **Corrigir Submódulos Destacados**: Corrige submódulos com HEAD destacada.
 
+Quem pode **criar o painel** (`/init`) e quem pode usar cada ação depende de `GIT_ADMIN_ROLE_ID` e da lista de utilizadores por repositório; detalhes nos comentários do `.env.example`.
+
 ## ⚙️ Configuração do Bot no Discord
 
 1. Acesse o [Portal de Desenvolvedores do Discord](https://discord.com/developers/applications)
 2. Crie uma nova aplicação e configure um bot
-3. Ative as seguintes opções na página do bot:
-   - PRESENCE INTENT
-   - SERVER MEMBERS INTENT
-   - MESSAGE CONTENT INTENT
+3. **Intents:** o bot usa apenas `Guilds` e `GuildMessages` (ver [`src/index.js`](src/index.js)). Não é necessário ativar Presence, Server Members Intent ou Message Content Intent para o uso normal do painel e dos comandos slash.
 4. Na seção "OAuth2" > "URL Generator", selecione os escopos:
    - `bot`
    - `applications.commands`
@@ -140,7 +155,7 @@ Se os comandos slash não aparecerem:
 4. Aguarde até uma hora para comandos globais (ou use registro em servidor específico)
 5. Tente remover e adicionar o bot ao servidor novamente
 
-Para registro de comandos em um servidor específico (mais rápido para testes), modifique o arquivo `deploy-commands.js`:
+Para registro de comandos em um servidor específico (mais rápido para testes), ajuste [`src/deploy-commands.js`](src/deploy-commands.js):
 
 ```javascript
 // Para testes em um servidor específico (substitua GUILD_ID pelo ID do seu servidor)
@@ -150,9 +165,9 @@ const data = await rest.put(
 );
 ```
 
-## 🔗 Webhook GitHub (Opcional)
+## 🔗 Webhook GitHub / GitLab (Opcional)
 
-O bot pode receber webhooks do GitHub e executar pull automático quando um commit contém `@pull` na mensagem.
+O bot pode receber webhooks do GitHub ou GitLab e executar pull automático quando um commit contém `@pull` na mensagem.
 
 ### Configuração Rápida
 
@@ -196,17 +211,24 @@ git-manager-discord/
 │   ├── commands/        # Comandos slash do Discord
 │   │   └── init.js      # Comando para inicializar o painel de controle
 │   ├── utils/           # Funções utilitárias
-│   │   └── gitManager.js # Gerenciador de operações Git
+│   │   ├── gitManager.js   # Operações Git
+│   │   ├── gitPermissions.js # Quem pode usar o painel por cargo/lista
+│   │   ├── repoUserAccess.js # Persistência da lista por repositório
+│   │   ├── repoPolicy.js      # Políticas (ex.: pull só no reinício)
+│   │   └── restartPullQueue.js # Fila para pulls agendados
 │   ├── services/        # Serviços da aplicação
-│   │   ├── panelService.js # Gerenciamento de painéis interativos
-│   │   └── webhookService.js # Servidor de webhook GitHub
+│   │   ├── panelService.js      # Painéis interativos
+│   │   ├── webhookService.js    # Servidor HTTP de webhooks
+│   │   └── restartPullScheduler.js # Pull agendado antes do reinício
 │   ├── handlers/        # Manipuladores de eventos
-│   │   └── buttonHandler.js # Tratamento de interações com botões
+│   │   └── buttonHandler.js # Botões, menus e modais
 │   ├── index.js         # Arquivo principal do bot
-│   └── deploy-commands.js # Script para registro de comandos
+│   └── deploy-commands.js # Registro de comandos slash
 ├── data/
-│   ├── pathHashMap.json # Mapeamento de caminhos para hashes
-│   └── repoMapping.json # Mapeamento GitHub repo → caminho local
+│   ├── pathHashMap.json    # Mapeamento hash ↔ caminho (componentes do painel)
+│   ├── repoMapping.json    # Mapeamento remoto → caminho local (webhook)
+│   ├── repoUserAccess.json # Utilizadores Discord autorizados por repo
+│   └── repoPolicy.json     # Ex.: pullOnRestartOnly
 ├── logs/                # Logs do PM2 (se usado)
 ├── .env                 # Variáveis de ambiente (não incluído no Git)
 ├── .env.example         # Exemplo de variáveis de ambiente

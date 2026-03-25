@@ -7,11 +7,18 @@ const {
   ButtonStyle,
   ModalBuilder,
   TextInputBuilder,
-  TextInputStyle
+  TextInputStyle,
+  UserSelectMenuBuilder
 } = require('discord.js');
 const path = require('path');
 const fs = require('fs');
+const simpleGit = require('simple-git');
 const GitManager = require('../utils/gitManager');
+const { isMainRepositoryPath } = require('../utils/repoPaths');
+const { isPullOnRestartOnly } = require('../utils/repoPolicy');
+const restartPullQueue = require('../utils/restartPullQueue');
+const gitPermissions = require('../utils/gitPermissions');
+const repoUserAccess = require('../utils/repoUserAccess');
 
 const HASH_MAP_FILE = path.join(process.cwd(), 'data', 'pathHashMap.json');
 
@@ -81,6 +88,173 @@ class ButtonHandler {
 
   setClient(client) {
     this.client = client;
+  }
+
+  /**
+   * Resolve caminho do repositório a partir do customId de botão (pathHash ou legado).
+   * @param {string} actionPart
+   * @returns {string|null}
+   */
+  resolveRepoPathFromButtonAction(actionPart) {
+    if (/^(pull-|update-sub-|fix-detached-|init-sub-|commit-)[a-f0-9]{16}$/.test(actionPart)) {
+      const pathHash = actionPart.substring(actionPart.lastIndexOf('-') + 1);
+      return this.getRepoPath(pathHash) || null;
+    }
+    if (actionPart.startsWith('fix-all-detached-')) {
+      const pathHash = actionPart.substring('fix-all-detached-'.length);
+      return this.getRepoPath(pathHash) || null;
+    }
+    const hashPrefixes = [
+      'pull-commit-',
+      'pull-stash-',
+      'pull-force-',
+      'update-all-commit-',
+      'update-all-stash-',
+      'update-all-force-'
+    ];
+    for (const p of hashPrefixes) {
+      if (actionPart.startsWith(p)) {
+        const pathHash = actionPart.substring(p.length);
+        if (/^[a-f0-9]{16}$/.test(pathHash)) {
+          return this.getRepoPath(pathHash) || null;
+        }
+      }
+    }
+    if (actionPart.startsWith('pull-')) {
+      const rest = actionPart.substring('pull-'.length);
+      if (/^[a-f0-9]{16}$/.test(rest)) return this.getRepoPath(rest) || null;
+      return rest || null;
+    }
+    if (actionPart.startsWith('update-sub-')) {
+      const rest = actionPart.substring('update-sub-'.length);
+      if (/^[a-f0-9]{16}$/.test(rest)) return this.getRepoPath(rest) || null;
+      return rest || null;
+    }
+    if (actionPart.startsWith('fix-detached-')) {
+      const rest = actionPart.substring('fix-detached-'.length);
+      if (/^[a-f0-9]{16}$/.test(rest)) return this.getRepoPath(rest) || null;
+      return rest || null;
+    }
+    if (actionPart.startsWith('init-sub-')) {
+      const rest = actionPart.substring('init-sub-'.length);
+      if (/^[a-f0-9]{16}$/.test(rest)) return this.getRepoPath(rest) || null;
+      return rest || null;
+    }
+    if (actionPart.startsWith('commit-')) {
+      const rest = actionPart.substring('commit-'.length);
+      if (/^[a-f0-9]{16}$/.test(rest)) return this.getRepoPath(rest) || null;
+      return rest || null;
+    }
+    return null;
+  }
+
+  /**
+   * @param {import('discord.js').ButtonInteraction} interaction
+   * @param {string} actionPart
+   * @returns {Promise<boolean>}
+   */
+  async assertPermissionForGitAction(interaction, actionPart) {
+    const member = interaction.member;
+    const mainPath = process.env.GIT_BASE_PATH;
+    if (!member) {
+      await interaction.reply({ content: 'Esta ação só está disponível no servidor.', ephemeral: true });
+      return false;
+    }
+
+    if (actionPart.startsWith('pull-cancel') || actionPart.startsWith('update-all-cancel')) {
+      return true;
+    }
+
+    if (actionPart === 'manage-access') {
+      if (!gitPermissions.isGitAdmin(member)) {
+        await interaction.reply({
+          content: 'Apenas membros com o cargo de administrador Git (`GIT_ADMIN_ROLE_ID`) podem gerir acessos.',
+          ephemeral: true
+        });
+        return false;
+      }
+      return true;
+    }
+
+    const panelMainActions = ['list-repos', 'sync-all', 'update-all', 'status-all', 'fix-all-detached'];
+    if (panelMainActions.includes(actionPart)) {
+      if (!mainPath || !gitPermissions.canUserActOnGit(member, mainPath)) {
+        await interaction.reply({
+          content: 'Sem permissão para ações no repositório principal. Peça um administrador Git para autorizar o seu utilizador.',
+          ephemeral: true
+        });
+        return false;
+      }
+      return true;
+    }
+
+    const repoPath = this.resolveRepoPathFromButtonAction(actionPart);
+    if (repoPath) {
+      if (!gitPermissions.canUserActOnGit(member, repoPath)) {
+        await interaction.reply({
+          content: 'Sem permissão para este repositório. Peça um administrador Git para o adicionar em **Gerir acessos**.',
+          ephemeral: true
+        });
+        return false;
+      }
+      return true;
+    }
+
+    return true;
+  }
+
+  /**
+   * Submódulos e caminhos em pullOnRestartOnly só entram na fila para o horário agendado.
+   * @param {string} repoPath
+   * @returns {boolean}
+   */
+  shouldQueuePullForDiscord(repoPath) {
+    if (!isMainRepositoryPath(repoPath)) return true;
+    if (isPullOnRestartOnly(repoPath)) return true;
+    return false;
+  }
+
+  /**
+   * @param {import('discord.js').Interaction} interaction
+   * @param {string} repoPath
+   * @param {string} panelId
+   */
+  async replyPullQueued(interaction, repoPath, panelId) {
+    restartPullQueue.enqueue(repoPath);
+    const queued = restartPullQueue.peek().length;
+    const embed = new EmbedBuilder()
+      .setTitle('Pull enfileirado')
+      .setDescription(
+        `**${path.basename(repoPath)}** foi adicionado à fila para o próximo horário de reinício ` +
+          '(pull automático alguns minutos antes, conforme `RESTART_SCHEDULE` no `.env`).\n' +
+          `Caminhos únicos na fila: **${queued}**.`
+      )
+      .setColor(0x3498db)
+      .setFooter({ text: `ID do Painel: ${panelId} | Auto-exclusão em 15s` })
+      .setTimestamp();
+    await interaction.editReply({ embeds: [embed], components: [] });
+    const reply = await interaction.fetchReply();
+    await this.scheduleMessageDeletion(reply, 15);
+  }
+
+  /**
+   * Enfileira todos os submódulos conhecidos (após pull do principal).
+   * @returns {Promise<string[]>}
+   */
+  async enqueueAllSubmodulesForRestart() {
+    try {
+      const repos = await gitManager.getRepositories();
+      const names = [];
+      for (const r of repos) {
+        if (r.isSubmodule && r.path) {
+          restartPullQueue.enqueue(r.path);
+          names.push(r.name || path.basename(r.path));
+        }
+      }
+      return names;
+    } catch {
+      return [];
+    }
   }
 
 
@@ -199,6 +373,16 @@ class ButtonHandler {
       const actionPart = customId.substring(0, lastColonIndex);
       
       console.log(`Processando ação de botão: ${actionPart} para painel: ${panelId}`);
+
+      const permissionOk = await this.assertPermissionForGitAction(interaction, actionPart);
+      if (!permissionOk) {
+        return;
+      }
+
+      if (actionPart === 'manage-access') {
+        await this.handleManageAccess(interaction, panelId);
+        return;
+      }
 
       if (actionPart.startsWith('fix-all-detached-')) {
         const pathHash = actionPart.substring('fix-all-detached-'.length);
@@ -371,6 +555,11 @@ class ButtonHandler {
 
       if (actionPart === 'select-repo') {
         await this.handleRepositorySelected(interaction, panelId);
+      } else if (actionPart === 'access-pick-repo') {
+        await this.handleAccessPickRepo(interaction, panelId);
+      } else if (actionPart.startsWith('access-user-rm:')) {
+        const pathHash = actionPart.substring('access-user-rm:'.length);
+        await this.handleAccessUserRemoveSelect(interaction, panelId, pathHash);
       } else {
         await interaction.reply({
           content: `Ação de menu não reconhecida: ${actionPart}`,
@@ -437,7 +626,150 @@ class ButtonHandler {
       }
     }
   }
- 
+
+  async handleManageAccess(interaction, panelId) {
+    await interaction.deferReply({ ephemeral: true });
+    const repos = await gitManager.getRepositories();
+    if (repos.length === 0) {
+      await interaction.editReply({ content: 'Nenhum repositório encontrado.' });
+      return;
+    }
+    const slice = repos.slice(0, 25);
+    const options = slice.map((repo) => {
+      const pathHash = this.mapRepoPath(repo.path);
+      let label = repo.name;
+      if (repo.isSubmodule) label = `${repo.name} (sub)`;
+      return new StringSelectMenuOptionBuilder()
+        .setLabel(label.slice(0, 100))
+        .setValue(pathHash)
+        .setDescription((repo.path || '').slice(0, 100));
+    });
+    const row = new ActionRowBuilder().addComponents(
+      new StringSelectMenuBuilder()
+        .setCustomId(`access-pick-repo:${panelId}`)
+        .setPlaceholder('Escolha o repositório')
+        .addOptions(options)
+    );
+    await interaction.editReply({
+      content: 'Selecione o repositório para ver e gerir utilizadores autorizados.',
+      components: [row]
+    });
+  }
+
+  async handleAccessPickRepo(interaction, panelId) {
+    if (!gitPermissions.isGitAdmin(interaction.member)) {
+      await interaction.reply({ content: 'Apenas administradores Git podem gerir acessos.', ephemeral: true });
+      return;
+    }
+    const pathHash = interaction.values[0];
+    const repoPath = this.getRepoPath(pathHash);
+    if (!repoPath) {
+      await interaction.reply({ content: 'Seleção inválida. Abra **Gerir acessos** novamente.', ephemeral: true });
+      return;
+    }
+    const users = repoUserAccess.getUsersForRepo(repoPath);
+    const embed = new EmbedBuilder()
+      .setTitle('Gerir acessos ao repositório')
+      .setDescription(
+        `**Caminho:** \`${repoPath}\`\n\n` +
+          '**Utilizadores autorizados:**\n' +
+          (users.length ? users.map((id) => `• <@${id}>`).join('\n') : '*(nenhum — apenas o cargo admin Git pode usar até adicionar alguém)*')
+      )
+      .setColor(0x5865f2)
+      .setFooter({ text: 'Adicione ou remova utilizadores abaixo.' });
+
+    const userAdd = new UserSelectMenuBuilder()
+      .setCustomId(`access-user-add:${pathHash}:${panelId}`)
+      .setPlaceholder('Adicionar utilizadores ao repositório')
+      .setMinValues(1)
+      .setMaxValues(10);
+
+    const rows = [new ActionRowBuilder().addComponents(userAdd)];
+
+    if (users.length > 0) {
+      const rmOptions = users.slice(0, 25).map((uid) =>
+        new StringSelectMenuOptionBuilder()
+          .setLabel(`Remover ${uid}`)
+          .setValue(uid)
+          .setDescription('Remove este utilizador')
+      );
+      rows.push(
+        new ActionRowBuilder().addComponents(
+          new StringSelectMenuBuilder()
+            .setCustomId(`access-user-rm:${pathHash}:${panelId}`)
+            .setPlaceholder('Remover um utilizador')
+            .addOptions(rmOptions)
+        )
+      );
+    }
+
+    const backRow = new ActionRowBuilder().addComponents(
+      new StringSelectMenuBuilder()
+        .setCustomId(`access-pick-repo:${panelId}`)
+        .setPlaceholder('Trocar de repositório')
+        .addOptions(
+          (await gitManager.getRepositories()).slice(0, 25).map((repo) => {
+            const ph = this.mapRepoPath(repo.path);
+            let label = repo.name;
+            if (repo.isSubmodule) label = `${repo.name} (sub)`;
+            return new StringSelectMenuOptionBuilder()
+              .setLabel(label.slice(0, 100))
+              .setValue(ph)
+              .setDescription((repo.path || '').slice(0, 100));
+          })
+        )
+    );
+    rows.push(backRow);
+
+    await interaction.update({ embeds: [embed], components: rows });
+  }
+
+  async handleAccessUserRemoveSelect(interaction, panelId, pathHash) {
+    if (!gitPermissions.isGitAdmin(interaction.member)) {
+      await interaction.reply({ content: 'Apenas administradores Git.', ephemeral: true });
+      return;
+    }
+    const repoPath = this.getRepoPath(pathHash);
+    if (!repoPath) {
+      await interaction.reply({ content: 'Repositório inválido.', ephemeral: true });
+      return;
+    }
+    const uid = interaction.values[0];
+    repoUserAccess.removeUser(repoPath, uid);
+    await interaction.reply({
+      content: `Utilizador removido de \`${repoPath}\`. Reabra **Gerir acessos** para atualizar a vista.`,
+      ephemeral: true
+    });
+  }
+
+  async handleUserSelectInteraction(interaction) {
+    const customId = interaction.customId;
+    const parts = customId.split(':');
+    if (parts[0] !== 'access-user-add' || parts.length !== 3) {
+      await interaction.reply({ content: 'Menu inválido.', ephemeral: true });
+      return;
+    }
+    const pathHash = parts[1];
+    const panelId = parts[2];
+    if (!gitPermissions.isGitAdmin(interaction.member)) {
+      await interaction.reply({ content: 'Apenas administradores Git.', ephemeral: true });
+      return;
+    }
+    const repoPath = this.getRepoPath(pathHash);
+    if (!repoPath) {
+      await interaction.reply({ content: 'Repositório inválido.', ephemeral: true });
+      return;
+    }
+    const ids = interaction.values;
+    for (const id of ids) {
+      repoUserAccess.addUser(repoPath, id);
+    }
+    await interaction.reply({
+      content: `**${ids.length}** utilizador(es) adicionado(s) ao repositório. Volte a selecionar o repositório em **Gerir acessos** para ver a lista atualizada.`,
+      ephemeral: true
+    });
+  }
+
 
   async handleListRepositories(interaction, panelId) {
     await this.cleanupAndReply(interaction);
@@ -564,10 +896,18 @@ class ButtonHandler {
 
 
   async handleRepositorySelected(interaction, panelId) {
+    const selectedRepoPath = interaction.values[0];
+    if (!gitPermissions.canUserActOnGit(interaction.member, selectedRepoPath)) {
+      await interaction.reply({
+        content: 'Sem permissão para este repositório. Peça um administrador Git para o autorizar em **Gerir acessos**.',
+        ephemeral: true
+      });
+      return;
+    }
+
     await this.cleanupAndReply(interaction);
     
     try {
-      const selectedRepoPath = interaction.values[0];
       console.log(`Repositório selecionado: ${selectedRepoPath}`);
       
       const status = await gitManager.getRepositoryStatus(selectedRepoPath);
@@ -699,6 +1039,11 @@ class ButtonHandler {
     await this.cleanupAndReply(interaction);
     
     try {
+      if (this.shouldQueuePullForDiscord(repoPath)) {
+        await this.replyPullQueued(interaction, repoPath, panelId);
+        return;
+      }
+
       const progressEmbed = new EmbedBuilder()
         .setTitle('Atualizando Repositório')
         .setDescription(`Executando pull em: ${path.basename(repoPath)}`)
@@ -796,6 +1141,19 @@ class ButtonHandler {
     await this.cleanupAndUpdate(interaction);
     
     try {
+      if (this.shouldQueuePullForDiscord(repoPath)) {
+        const warn = new EmbedBuilder()
+          .setTitle('Use a fila de reinício')
+          .setDescription(
+            'Este caminho só atualiza no horário de reinício. Use o botão **Pull** no repositório para enfileirar; stash/forçar não se aplicam à fila.'
+          )
+          .setColor(0x999999)
+          .setFooter({ text: `ID do Painel: ${panelId}` })
+          .setTimestamp();
+        await interaction.editReply({ embeds: [warn], components: [] });
+        return;
+      }
+
       const progressEmbed = new EmbedBuilder()
         .setTitle('Atualizando Repositório')
         .setDescription(
@@ -865,7 +1223,7 @@ class ButtonHandler {
         embeds: [updateEmbed]
       });
       
-      const result = await gitManager.pullRepository(mainRepo.path, true, 'normal');
+      const result = await gitManager.pullRepository(mainRepo.path, false, 'normal');
       
       if (result === 'STATUS_HAS_CHANGES') {
         const optionsEmbed = new EmbedBuilder()
@@ -876,7 +1234,7 @@ class ButtonHandler {
           )
           .setColor(0xFFA500)
           .addFields(
-            { name: '📝 Commit e Update', value: 'Commitar alterações locais automaticamente e depois fazer update', inline: false },
+            { name: '📝 Commit e Update', value: 'Commitar alterações locais automaticamente e depois fazer update (apenas principal)', inline: false },
             { name: '💾 Stash', value: 'Salvar alterações locais temporariamente e aplicá-las após o pull', inline: false },
             { name: '⚡ Forçar', value: 'Descartar todas as alterações locais (CUIDADO: mudanças serão perdidas)', inline: false },
             { name: '❌ Cancelar', value: 'Cancelar operação de atualização', inline: false }
@@ -921,9 +1279,15 @@ class ButtonHandler {
         return;
       }
       
+      const subNames = await this.enqueueAllSubmodulesForRestart();
+      let desc = `Resultado: ${result}`;
+      if (subNames.length > 0) {
+        desc += `\n\n**Submódulos enfileirados** para o próximo reinício (${subNames.length}): ${subNames.join(', ')}`;
+      }
+
       const resultEmbed = new EmbedBuilder()
         .setTitle('Atualização Concluída')
-        .setDescription(`Resultado: ${result}`)
+        .setDescription(desc)
         .setColor(0x00FF00)
         .setFooter({ text: `ID do Painel: ${panelId} | Auto-exclusão em 10s` })
         .setTimestamp();
@@ -966,11 +1330,17 @@ class ButtonHandler {
         components: []
       });
       
-      const result = await gitManager.pullRepository(repoPath, true, mode);
+      const result = await gitManager.pullRepository(repoPath, false, mode);
       
+      const subNames = await this.enqueueAllSubmodulesForRestart();
+      let desc = result;
+      if (subNames.length > 0) {
+        desc += `\n\n**Submódulos enfileirados** para o próximo reinício (${subNames.length}): ${subNames.join(', ')}`;
+      }
+
       const resultEmbed = new EmbedBuilder()
         .setTitle('Atualização Concluída')
-        .setDescription(result)
+        .setDescription(desc)
         .setColor(0x00FF00)
         .setFooter({ text: `ID do Painel: ${panelId}` })
         .setTimestamp();
@@ -1418,6 +1788,11 @@ class ButtonHandler {
     await this.cleanupAndUpdate(interaction);
     
     try {
+      if (this.shouldQueuePullForDiscord(repoPath)) {
+        await this.replyPullQueued(interaction, repoPath, panelId);
+        return;
+      }
+
       const progressEmbed = new EmbedBuilder()
         .setTitle('Commitando e Atualizando Repositório')
         .setDescription(
@@ -1478,11 +1853,17 @@ class ButtonHandler {
         components: []
       });
       
-      const result = await gitManager.commitAndPull(repoPath, true);
+      const result = await gitManager.commitAndPull(repoPath, false);
       
+      const subNames = await this.enqueueAllSubmodulesForRestart();
+      let desc = result;
+      if (subNames.length > 0) {
+        desc += `\n\n**Submódulos enfileirados** para o próximo reinício (${subNames.length}): ${subNames.join(', ')}`;
+      }
+
       const resultEmbed = new EmbedBuilder()
         .setTitle('Commit e Atualização Concluídos')
-        .setDescription(result)
+        .setDescription(desc)
         .setColor(0x00FF00)
         .setFooter({ text: `ID do Painel: ${panelId} | Auto-exclusão em 10s` })
         .setTimestamp();

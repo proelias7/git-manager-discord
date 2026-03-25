@@ -6,6 +6,7 @@ const { Client, Collection, GatewayIntentBits, Events } = require('discord.js');
 const GitManager = require('./utils/gitManager');
 const ButtonHandler = require('./handlers/buttonHandler');
 const WebhookService = require('./services/webhookService');
+const { startRestartPullScheduler } = require('./services/restartPullScheduler');
 const { deployCommands } = require('./deploy-commands');
 
 const client = new Client({
@@ -20,6 +21,7 @@ client.commands = new Collection();
 const gitManager = new GitManager(process.env.GIT_BASE_PATH);
 const buttonHandler = new ButtonHandler();
 let webhookService = null;
+let restartScheduler = null;
 
 buttonHandler.setClient(client);
 
@@ -78,6 +80,8 @@ client.once(Events.ClientReady, async () => {
   } else {
     console.log('ℹ️ Serviço de webhook Git desabilitado (ENABLE_GITHUB_WEBHOOK não está definido como true)');
   }
+
+  restartScheduler = startRestartPullScheduler(gitManager);
 });
 
 client.on(Events.InteractionCreate, async interaction => {
@@ -102,6 +106,9 @@ client.on(Events.InteractionCreate, async interaction => {
     }
     else if (interaction.isStringSelectMenu()) {
       await buttonHandler.handleSelectMenuInteraction(interaction);
+    }
+    else if (interaction.isUserSelectMenu()) {
+      await buttonHandler.handleUserSelectInteraction(interaction);
     }
     else if (interaction.isModalSubmit()) {
       await buttonHandler.handleModalSubmit(interaction);

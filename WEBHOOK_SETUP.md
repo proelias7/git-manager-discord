@@ -63,6 +63,8 @@ DISCORD_WEBHOOK_CHANNEL_ID=id_do_canal
 GIT_BASE_PATH=C:/seus/projetos
 ```
 
+> **Outras variáveis** (permissões do painel Git `GIT_ADMIN_ROLE_ID`, agendamento `RESTART_SCHEDULE`, `AUTO_REPO_MAPPING`, etc.) são opcionais para o webhook em si; veja o comentário de cada uma no [`.env.example`](.env.example) e o [README](README.md).
+
 ### Passo 3: Configurar o Webhook no Provedor
 
 <details>

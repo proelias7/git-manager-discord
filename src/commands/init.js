@@ -1,6 +1,6 @@
 const { SlashCommandBuilder } = require('discord.js');
 const panelService = require('../services/panelService');
-
+const { canCreateGitPanel } = require('../utils/gitPermissions');
 
 module.exports = {
   data: new SlashCommandBuilder()
@@ -10,7 +10,24 @@ module.exports = {
   async execute(interaction) {
     try {
       console.log(`Comando /init executado por: ${interaction.user.tag}`);
-      
+
+      const mainPath = process.env.GIT_BASE_PATH;
+      if (!mainPath) {
+        await interaction.reply({
+          content: 'GIT_BASE_PATH não está configurado no .env.',
+          ephemeral: true
+        });
+        return;
+      }
+
+      if (!canCreateGitPanel(interaction.member, mainPath)) {
+        await interaction.reply({
+          content:
+            'Sem permissão para criar o painel. É necessário o cargo de administrador Git (`GIT_ADMIN_ROLE_ID`), estar autorizado no repositório principal, ou (se ainda não houver utilizadores configurados) ser Administrador do Discord no servidor.',
+          ephemeral: true
+        });
+        return;
+      }
 
       await interaction.deferReply({ ephemeral: false });
       

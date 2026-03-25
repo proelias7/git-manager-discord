@@ -3,6 +3,7 @@ const crypto = require('crypto');
 const path = require('path');
 const fs = require('fs');
 const simpleGit = require('simple-git');
+const { isMainRepositoryPath } = require('../utils/repoPaths');
 
 // Constantes para identificar a origem do webhook
 const WEBHOOK_SOURCE = {
@@ -641,6 +642,16 @@ class WebhookService {
             repo: repoFullName,
             autoMappingEnabled: this.autoMapping,
             searchPath: this.reposSearchPath || 'não configurado'
+          });
+        }
+
+        if (!isMainRepositoryPath(localPath)) {
+          return res.status(200).json({
+            message:
+              'O webhook @pull aplica-se apenas ao repositório principal (GIT_BASE_PATH). Submódulos não são atualizados automaticamente — use o Discord para enfileirar pull no horário de reinício.',
+            source: source,
+            repo: repoFullName,
+            localPath: localPath
           });
         }
 

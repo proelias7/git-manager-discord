@@ -97,7 +97,12 @@ class PanelService {
           .setCustomId(`status-all:${this.panelId}`)
           .setLabel('Status Geral')
           .setStyle(ButtonStyle.Secondary)
-          .setEmoji('📊')
+          .setEmoji('📊'),
+        new ButtonBuilder()
+          .setCustomId(`manage-access:${this.panelId}`)
+          .setLabel('Gerir acessos')
+          .setStyle(ButtonStyle.Secondary)
+          .setEmoji('🔐')
       );
   }
 
