@@ -57,9 +57,9 @@ class PanelService {
       )
       .setColor(0x4c6ef5)
       .setThumbnail('https://git-scm.com/images/logos/downloads/Git-Icon-1788C.png')
-      .setFooter({ 
+      .setFooter({
         text: `Painel ID: ${this.panelId} | GitBot v${require('../../package.json').version}`,
-        iconURL: 'https://i.imgur.com/AfFp7pu.png'
+        iconURL: 'https://git-scm.com/images/logos/downloads/Git-Icon-1788C.png'
       })
       .setTimestamp();
   }
@@ -73,9 +73,9 @@ class PanelService {
         'Por favor, crie um novo painel utilizando o comando `/init`.'
       )
       .setColor(0xfa5252)
-      .setFooter({ 
+      .setFooter({
         text: `Painel ID inválido | GitBot v${require('../../package.json').version}`,
-        iconURL: 'https://i.imgur.com/AfFp7pu.png'
+        iconURL: 'https://git-scm.com/images/logos/downloads/Git-Icon-1788C.png'
       });
   }
 
